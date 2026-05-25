@@ -72,15 +72,14 @@ async function runTests() {
   // ── SETUP: Login CB_THON ──────────────────────────────────
   console.log("── SETUP: Login as CB_THON ──");
   const loginRes = await post("/login", CONFIG.CB_THON);
-  check("Login succeeds", loginRes.body.success === true,
-    JSON.stringify(loginRes.body.error_code));
+  check("Login succeeds", loginRes.body.success === true, loginRes.body.error_code);
   if (!loginRes.body.success) {
     console.log("  ⚠️  Cannot continue — login failed");
     process.exit(1);
   }
 
-  // Response format: { success, token, manifest }  (flat — no .data wrapper)
   const token           = loginRes.body.token;
+  const user_id         = CONFIG.CB_THON.user_id;   // required by validateToken
   const manifestVersion = loginRes.body.manifest?.manifest_version || "v_unknown";
   const xa_code         = CONFIG.CB_THON.xa_code;
   const year            = CONFIG.CB_THON.year;
@@ -91,6 +90,7 @@ async function runTests() {
   console.log("── T01: Happy path ──");
   const t01 = await post("/push_data", {
     token,
+    user_id,
     xa_code,
     year,
     manifest_version_used: manifestVersion,
@@ -102,57 +102,53 @@ async function runTests() {
     }],
   });
   console.log("  response:", JSON.stringify(t01.body).substring(0, 300));
-  check("success true",           t01.body.success === true,        t01.body.error_code);
-  check("processed = 1",          t01.body.processed === 1);
+  check("success true",            t01.body.success === true,       t01.body.error_code);
+  check("processed = 1",           t01.body.processed === 1);
   check("submission_ids returned", Array.isArray(t01.body.submission_ids) &&
                                    t01.body.submission_ids.length === 1);
-  check("no warnings",            t01.body.warnings?.length === 0);
-  check("new_manifest present",   !!t01.body.new_manifest);
+  check("no warnings",             t01.body.warnings?.length === 0);
+  check("new_manifest present",    !!t01.body.new_manifest);
   console.log();
 
-  // ── T02: Duplicate block ──────────────────────────────────
+  // ── T02: Duplicate → DATA_004 ─────────────────────────────
   console.log("── T02: Duplicate submission → DATA_004 ──");
   const t02 = await post("/push_data", {
-    token, xa_code, year,
+    token, user_id, xa_code, year,
     manifest_version_used: manifestVersion,
     submissions: [{
-      req_id:              CONFIG.OPEN_REQ_ID,   // same → blocked
+      req_id:              CONFIG.OPEN_REQ_ID,   // same as T01 → blocked
       device_collected_at: "2025-06-15T09:30:00Z",
       values:              { CS001: 999 },
     }],
   });
   console.log("  response:", JSON.stringify(t02.body).substring(0, 200));
-  check("success false",   t02.body.success === false);
-  check("error DATA_004",  t02.body.error_code === "DATA_004");
+  check("success false",  t02.body.success === false);
+  check("error DATA_004", t02.body.error_code === "DATA_004");
   console.log();
 
   // ── T03: Stale manifest → accept + warn ──────────────────
-  console.log("── T03: Stale manifest → 200 + MANIFEST_OUTDATED ──");
-  // Uses PERM_REQ_ID (REQ003) — but THON01 not in its danh_sach_thon
-  // so we expect PERM_002 here, which still proves server rejects correctly.
-  // For a clean stale test we need a second open req for THON01 — skip if unavailable.
-  console.log("  (skipped — REQ003 excludes THON01, tested in T04 instead)\n");
+  console.log("── T03: (skipped — need second OPEN req for THON01)\n");
 
-  // ── T04: Wrong thon → PERM_002 ───────────────────────────
-  console.log("── T04: Request excludes this thon → PERM_002 ──");
+  // ── T04: Thon not in request → PERM_002 ──────────────────
+  console.log("── T04: Thon excluded from request → PERM_002 ──");
   const t04 = await post("/push_data", {
-    token, xa_code, year,
+    token, user_id, xa_code, year,
     manifest_version_used: manifestVersion,
     submissions: [{
-      req_id:              CONFIG.PERM_REQ_ID,  // REQ003 excludes THON01
+      req_id:              CONFIG.PERM_REQ_ID,   // REQ003 excludes THON01
       device_collected_at: "2025-06-15T09:00:00Z",
       values:              { CS001: 1 },
     }],
   });
   console.log("  response:", JSON.stringify(t04.body).substring(0, 200));
-  check("success false",   t04.body.success === false);
-  check("error PERM_002",  t04.body.error_code === "PERM_002");
+  check("success false",  t04.body.success === false);
+  check("error PERM_002", t04.body.error_code === "PERM_002");
   console.log();
 
   // ── T05: Closed request → DATA_002 ───────────────────────
   console.log("── T05: Closed request → DATA_002 ──");
   const t05 = await post("/push_data", {
-    token, xa_code, year,
+    token, user_id, xa_code, year,
     manifest_version_used: manifestVersion,
     submissions: [{
       req_id:              CONFIG.CLOSED_REQ_ID,
@@ -161,24 +157,24 @@ async function runTests() {
     }],
   });
   console.log("  response:", JSON.stringify(t05.body).substring(0, 200));
-  check("success false",   t05.body.success === false);
-  check("error DATA_002",  t05.body.error_code === "DATA_002");
+  check("success false",  t05.body.success === false);
+  check("error DATA_002", t05.body.error_code === "DATA_002");
   console.log();
 
   // ── T06: Missing fields → DATA_001 ───────────────────────
-  console.log("── T06: Missing submissions field → DATA_001 ──");
+  console.log("── T06: Missing submissions → DATA_001 ──");
   const t06 = await post("/push_data", {
-    token, xa_code, year,
+    token, user_id, xa_code, year,
     manifest_version_used: manifestVersion,
     // submissions missing
   });
   console.log("  response:", JSON.stringify(t06.body).substring(0, 200));
-  check("success false",   t06.body.success === false);
-  check("error DATA_001",  t06.body.error_code === "DATA_001");
+  check("success false",  t06.body.success === false);
+  check("error DATA_001", t06.body.error_code === "DATA_001");
 
-  // T06b: empty values object
+  // T06b: empty values
   const t06b = await post("/push_data", {
-    token, xa_code, year,
+    token, user_id, xa_code, year,
     manifest_version_used: manifestVersion,
     submissions: [{
       req_id:              CONFIG.OPEN_REQ_ID,
@@ -191,14 +187,14 @@ async function runTests() {
     t06b.body.success === false && t06b.body.error_code === "DATA_001");
   console.log();
 
-  // ── T07: Wrong role (LANH_DAO) → PERM_001 ────────────────
+  // ── T07: Wrong role → PERM_001 ───────────────────────────
   console.log("── T07: LANH_DAO cannot push → PERM_001 ──");
   const loginLD = await post("/login", CONFIG.LANH_DAO);
   if (loginLD.body.success) {
-    const ldToken = loginLD.body.token;
+    const ldToken   = loginLD.body.token;
+    const ldUserId  = CONFIG.LANH_DAO.user_id;
     const t07 = await post("/push_data", {
-      token:                 ldToken,
-      xa_code, year,
+      token: ldToken, user_id: ldUserId, xa_code, year,
       manifest_version_used: manifestVersion,
       submissions: [{
         req_id:              CONFIG.OPEN_REQ_ID,
@@ -207,8 +203,8 @@ async function runTests() {
       }],
     });
     console.log("  response:", JSON.stringify(t07.body).substring(0, 200));
-    check("success false",   t07.body.success === false);
-    check("error PERM_001",  t07.body.error_code === "PERM_001");
+    check("success false",  t07.body.success === false);
+    check("error PERM_001", t07.body.error_code === "PERM_001");
   } else {
     console.log("  ⚠️  Skipped — LANH_DAO login failed");
   }
@@ -217,8 +213,8 @@ async function runTests() {
   // ── T08: Bad token → AUTH_001 ─────────────────────────────
   console.log("── T08: Invalid token → AUTH_001 ──");
   const t08 = await post("/push_data", {
-    token:                 "a".repeat(64),
-    xa_code, year,
+    token:   "a".repeat(64),
+    user_id, xa_code, year,
     manifest_version_used: manifestVersion,
     submissions: [{
       req_id:              CONFIG.OPEN_REQ_ID,
@@ -227,8 +223,8 @@ async function runTests() {
     }],
   });
   console.log("  response:", JSON.stringify(t08.body).substring(0, 200));
-  check("success false",   t08.body.success === false);
-  check("error AUTH_001",  t08.body.error_code === "AUTH_001");
+  check("success false",  t08.body.success === false);
+  check("error AUTH_001", t08.body.error_code === "AUTH_001");
   console.log();
 
   // ── Summary ───────────────────────────────────────────────
