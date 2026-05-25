@@ -28,7 +28,7 @@
 // Protected by X-Internal-Secret header (set in index.js).
 // ============================================================
 
-const { db, admin, paths, serverTimestamp } = require("../utils/firestore");
+const { db, paths, serverTimestamp } = require("../utils/firestore");
 const { successResponse, errorResponse }    = require("../utils/response");
 const { ERROR_CODES, SUBMISSION_STATUS }    = require("../utils/constants");
 const { google }                            = require("googleapis");
@@ -208,24 +208,28 @@ async function syncToSheets(req, res) {
       const syncStateRef = db.collection("communes").doc(xa_code)
                              .collection("config").doc("sync_state");
       const syncStateSnap = await syncStateRef.get();
-      const lastSyncAt    = syncStateSnap.exists
-        ? (syncStateSnap.data().last_sheets_sync_at || new admin.firestore.Timestamp(0, 0))
-        : new admin.firestore.Timestamp(0, 0);
 
-      // ── 2b. Fetch new verified submissions since checkpoint
+      // Plain ms — avoids admin.firestore.Timestamp constructor (not reliable in v12)
+      const lastSyncMs = syncStateSnap.exists
+        ? (syncStateSnap.data().last_sheets_sync_at?.toMillis?.() ?? 0)
+        : 0;
+
+      // ── 2b. Fetch VERIFIED submissions; filter by checkpoint in memory
+      // Single-field query avoids composite index requirement on (status + verified_at)
       const subsSnap = await paths.submissions(xa_code)
-        .where("status",      "==", SUBMISSION_STATUS.VERIFIED)
-        .where("verified_at", ">",  lastSyncAt)
+        .where("status", "==", SUBMISSION_STATUS.VERIFIED)
         .get();
 
-      if (subsSnap.empty) {
+      const subs = subsSnap.docs
+        .map(d => d.data())
+        .filter(s => (s.verified_at?.toMillis?.() ?? 0) > lastSyncMs);
+
+      if (subs.length === 0) {
         xaResult.skipped = true;
         xaResult.message = "Không có submission mới cần sync";
         results.push(xaResult);
         continue;
       }
-
-      const subs = subsSnap.docs.map(d => d.data());
 
       // ── 2c. Batch-fetch request docs ──────────────────────
       const uniqueReqIds = [...new Set(subs.map(s => s.req_id))];
