@@ -1,12 +1,13 @@
+//handlers/data.js
 "use strict";
 
-const { db, serverTimestamp }    = require("../utils/firestore");
-const { buildManifest }          = require("../utils/manifest");
-const { validateToken }          = require("../middleware/validateToken");
-const { checkPermission }        = require("../middleware/checkPermission");
-const { logAudit }               = require("../middleware/logAudit");
+const { db, serverTimestamp }            = require("../utils/firestore");
+const { buildManifest }                  = require("../utils/manifest");
+const { validateToken }                  = require("../middleware/validateToken");
+const { checkPermission }                = require("../middleware/checkPermission");
+const { logAudit }                       = require("../middleware/logAudit");
 const { successResponse, errorResponse } = require("../utils/response");
-const { ACTIONS, ERROR_CODES }   = require("../utils/constants");
+const { ACTIONS, ERROR_CODES }           = require("../utils/constants");
 
 // ============================================================
 // PUSH DATA
@@ -24,11 +25,10 @@ const { ACTIONS, ERROR_CODES }   = require("../utils/constants");
 //   1 write — logAudit
 //   2 reads — buildManifest (manifest doc + has_submitted query)
 //   ─────────────────────────────────────────────────────────
-//   Total: (N+5) reads + (N+1) writes  — minimum possible for N subs
+//   Total: (N+5) reads + (N+1) writes — minimum possible for N subs
 // ============================================================
 
 // Firestore "in" query limit (30 as of 2024 Admin SDK).
-// A single push_data should never exceed this in practice.
 const FIRESTORE_IN_LIMIT = 30;
 
 /**
@@ -44,18 +44,19 @@ const FIRESTORE_IN_LIMIT = 30;
  *       req_id:              string,
  *       device_collected_at: ISO string,
  *       values:              { [chi_so_id]: number|string|boolean },
- *       anh_urls:            string[]   // optional
+ *       anh_urls?:           string[]
  *     }
  *   ]
  * }
  */
 async function pushData(req, res) {
 
-  // ── 1. Auth & permission ──────────────────────────────────
-  // Only CB_THON may push data (Business Rule R2).
-  // checkPermission throws immediately if role or scope fails.
+  // ── 1. Auth — role check happens per-request below ───────
+  // NOTE: checkPermission for PUSH_DATA requires scope.request,
+  // so we do NOT call it here. Role + R5 scope are both checked
+  // inside the request-validation loop (step 4) once we have
+  // the actual request docs from Firestore.
   const user = await validateToken(req);
-  checkPermission(user, ACTIONS.PUSH_DATA);
 
   const { xa_code, year, manifest_version_used, submissions } = req.body;
   const thonCode = user.don_vi;   // CB_THON scope is their village
@@ -79,7 +80,7 @@ async function pushData(req, res) {
       `Không thể push quá ${FIRESTORE_IN_LIMIT} submissions trong một lần`);
   }
 
-  // Validate structure of each submission item
+  // Validate structure of each submission item upfront
   for (const sub of submissions) {
     if (!sub.req_id) {
       return errorResponse(res, ERROR_CODES.DATA_001,
@@ -100,7 +101,7 @@ async function pushData(req, res) {
   }
 
   // Guard: no duplicate req_id within the same push payload
-  const reqIds   = [...new Set(submissions.map(s => s.req_id))];
+  const reqIds = [...new Set(submissions.map(s => s.req_id))];
   if (reqIds.length !== submissions.length) {
     return errorResponse(res, ERROR_CODES.DATA_001,
       "Payload chứa req_id trùng nhau — mỗi req_id chỉ được gửi một lần");
@@ -108,9 +109,9 @@ async function pushData(req, res) {
 
   const warnings = [];
 
-  // ── 3. Batch-fetch request documents ─────────────────────
+  // ── 3. Batch-fetch all request documents ─────────────────
   // One db.getAll() call — never loop doc().get()
-  const reqRefs = reqIds.map(id =>
+  const reqRefs  = reqIds.map(id =>
     db.collection(`communes/${xa_code}/requests`).doc(id)
   );
   const reqSnaps = await db.getAll(...reqRefs);
@@ -123,7 +124,13 @@ async function pushData(req, res) {
     }
   }
 
-  // ── 4. Validate each request (existence, status, R5 scope)
+  // ── 4. Validate each request: existence, status, role + R5 scope
+  //
+  // checkPermission(user, PUSH_DATA, { request }) is called here
+  // (not at the top of the function) because:
+  //   a) PUSH_DATA scopeCheck needs the actual request object
+  //   b) Role check (CB_THON only) is also enforced inside
+  //      checkPermission on the first call
   for (const sub of submissions) {
     const request = requestMap[sub.req_id];
 
@@ -139,18 +146,14 @@ async function pushData(req, res) {
         `Request ${sub.req_id} đã đóng (status hiện tại: ${request.status})`);
     }
 
-    // R5: village of current user must be in request's target list
-    // This prevents a CB_THON from forging data for another village
-    const targetThons = request.danh_sach_thon || [];
-    if (!targetThons.includes(thonCode)) {
-      return errorResponse(res, ERROR_CODES.PERM_002,
-        `Thôn ${thonCode} không thuộc danh sách yêu cầu nộp của request ${sub.req_id}`);
-    }
+    // Role check (PERM_001) + R5 scope check (PERM_002):
+    // throws immediately if user is not CB_THON, or thon not in list
+    checkPermission(user, ACTIONS.PUSH_DATA, { request });
   }
 
   // ── 5. Manifest version check ─────────────────────────────
-  // Stale manifest → ACCEPT data, but flag for CB_CM during verify.
-  // (spec §9: still accept, only add warning SYNC_001)
+  // Stale manifest → ACCEPT data, only add warning for CB_CM to
+  // see during verify. (spec §9: still accept, flag MANIFEST_OUTDATED)
   const manifestSnap = await db
     .collection(`communes/${xa_code}/manifests`)
     .doc("current")
@@ -166,7 +169,7 @@ async function pushData(req, res) {
 
   // ── 6. Duplicate check (R7) ───────────────────────────────
   // One query covers all req_ids for this thon in this year.
-  // REJECT the entire push if any duplicate found —
+  // We reject the entire push if any duplicate is found —
   // client should reconcile before retrying.
   const existingSnap = await db
     .collection(`communes/${xa_code}/submissions`)
@@ -182,9 +185,9 @@ async function pushData(req, res) {
   }
 
   // ── 7. Batch write all submissions ───────────────────────
-  const batch        = db.batch();
+  const batch         = db.batch();
   const submissionIds = [];
-  const submittedAt  = serverTimestamp();   // single sentinel, safe to reuse
+  const submittedAt   = serverTimestamp(); // single sentinel, safe to reuse in batch
 
   for (const sub of submissions) {
     const newRef       = db.collection(`communes/${xa_code}/submissions`).doc();
@@ -211,7 +214,7 @@ async function pushData(req, res) {
 
   await batch.commit();
 
-  // ── 8. Audit log ─────────────────────────────────────────
+  // ── 8. Audit log ──────────────────────────────────────────
   await logAudit(user, ACTIONS.PUSH_DATA, {
     xa_code,
     year:                  yearNum,
@@ -224,7 +227,7 @@ async function pushData(req, res) {
 
   // ── 9. Return fresh manifest ──────────────────────────────
   // Fetch an up-to-date manifest so the client can update its cache
-  // in a single round-trip (offline-first principle: 1 push = all done).
+  // in a single round-trip (offline-first: 1 push = everything done).
   const newManifest = await buildManifest(xa_code, yearNum, user, null);
 
   return successResponse(res, {
