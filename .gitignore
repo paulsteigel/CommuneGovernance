@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Secret files — NEVER commit these
+service-account.json
+*.json.key
+.env
+.env.local
+.env.production
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# OS
+.DS_Store
+Thumbs.db
