@@ -1,138 +1,87 @@
 # CommuneGovernance — CARE Vietnam
-## API & Infrastructure
+## Quick Status
 - API: https://careapi-cx7avsd4pa-as.a.run.app
-- Firebase project: communegovernance (ngocdd@thiennhienviet.org.vn)
-- Cloud Run (asia-southeast1), Node.js 24, Firebase Functions v2
+- Firebase: communegovernance (ngocdd@thiennhienviet.org.vn)
 - Local: F:\Developers\CARE\CommuneGovernance\
+- Node 24, Firebase Functions v2, Cloud Run asia-southeast1
 
-## Project structure
-```
-index.js                    ← Express app, lazy-load handlers
-handlers/
-  auth.js                   ✅ login, logout, pullManifest
-  data.js                   ✅ pushData
-  indicators.js             ✅ createIndicator, approveIndicator
-  requests.js               ✅ createRequest
-  verify.js                 ✅ verifyData, resubmitData
-  dashboard.js              ⏳ getDashboard
-  sync.js                   ⏳ syncToSheets
-middleware/
-  validateToken.js          ← session token check, attaches req.user
-  checkPermission.js        ← PERMISSION_MATRIX throw on fail
-  logAudit.js               ← fire-and-forget audit log
-utils/
-  constants.js              ← ROLES, ACTIONS, ERROR_CODES, PERMISSION_MATRIX
-  firestore.js              ← db singleton, paths{}, batchGet, batchWrite
-  response.js               ← successResponse, errorResponse, asyncHandler
-  crypto.js                 ← verifyPassword, generateToken
-  manifest.js               ← buildManifest, rebuildManifest
-tests/
-  seed_test_data.js         ← run once to seed Firestore
-  test_push_data.js         ✅ 19/19
-  test_indicators.js        ✅ 23/23
-  test_requests.js          ✅ 25/25
-  test_verify.js            ✅ 34/34
-```
+## All Handlers — Status
+| Handler | Functions | Tests |
+|---|---|---|
+| auth.js | login, logout, pullManifest | ✅ |
+| data.js | pushData | ✅ 19/19 |
+| indicators.js | createIndicator, approveIndicator | ✅ 23/23 |
+| requests.js | createRequest | ✅ 25/25 |
+| verify.js | verifyData, resubmitData | ✅ 34/34 |
+| dashboard.js | getDashboard | ✅ test_dashboard.js passed |
+| sync.js | syncToSheets | ⏳ 12/15 — deploy fix pending |
 
-## Handler pattern (MUST follow exactly)
+## sync.js — Pending Fix (deploy before testing tomorrow)
+Two bugs fixed in latest sync.js output:
+1. Compound query `.where("verified_at", ">", timestamp)` needed composite
+   Firestore index → removed, now filters in memory instead
+2. `new admin.firestore.Timestamp(0, 0)` unreliable in firebase-admin v12
+   → replaced with plain `toMillis()` ms comparison
+
+Deploy command:
+  npx firebase-tools deploy --only functions
+
+Test command:
+  $env:INTERNAL_SECRET = "care-commune-sync-2025-secret-key-minimum32chars"
+  node tests/test_sync.js
+
+Expected: 15/15 after deploy
+
+## Next Big Feature — Voice Transcription (Azure Speech)
+Architecture decided: Token endpoint (NOT audio proxy)
+- POST /speech_token → short-lived Azure auth token (10 min)
+- Client uses Azure Speech SDK directly (mic → text on device)
+- No audio through backend → low latency, privacy-friendly
+- Azure region: southeastasia (Singapore)
+
+Env vars needed:
+  AZURE_SPEECH_KEY=...
+  AZURE_SPEECH_REGION=southeastasia
+
+New files to build:
+  handlers/transcribe.js  — getSpeechToken(req, res)
+  tests/test_transcribe.js
+
+Client app: to be built together (stack TBD)
+
+## Test Users (xa: XATEST, password: Test@1234)
+| user_id | vai_tro | nhanh | linh_vuc_codes |
+|---|---|---|---|
+| USR_THON01 | CB_THON | UBND | null |
+| USR_CBCM01 | CB_CHUYEN_MON | UBND | [NONG_NGHIEP, XA_HOI] |
+| USR_LANHDAO | LANH_DAO | UBND | null |
+
+INTERNAL_SECRET = "care-commune-sync-2025-secret-key-minimum32chars"
+
+## Handler Pattern (always follow)
 ```js
 async function myHandler(req, res) {
-  const user = await validateToken(req);          // 1 Firestore read
-  // input validation → errorResponse(res, ERROR_CODES.DATA_001, "...")
-  // fetch docs → paths.xxx(xa_code, id).get()
-  // state check → errorResponse(res, ERROR_CODES.DATA_005, "...")
+  const user = await validateToken(req);
+  // validate → errorResponse(res, ERROR_CODES.DATA_001, "...")
+  // fetch → paths.xxx(xa_code, id).get()
   checkPermission(user, ACTIONS.MY_ACTION, { nhanh, ... });
-  // business logic
   await logAudit(user, ACTIONS.MY_ACTION, { ... }, req);
   return successResponse(res, { ... });
 }
 ```
 
-## Roles & test users (xa: XATEST)
-| user_id       | vai_tro        | nhanh | don_vi            | linh_vuc_codes          | password   |
-|---------------|----------------|-------|-------------------|-------------------------|------------|
-| USR_THON01    | CB_THON        | UBND  | THON01            | null                     | Test@1234 |
-| USR_CBCM01    | CB_CHUYEN_MON  | UBND  | PHONG_NONG_NGHIEP | [NONG_NGHIEP, XA_HOI]  | Test@1234 |
-| USR_LANHDAO   | LANH_DAO       | UBND  | XA               | null                     | Test@1234 |
-
-## Seeded test data (XATEST, year 2025)
-- Indicators: CS001 (NONG_NGHIEP, ACTIVE), CS002 (XA_HOI, ACTIVE), CS003 (CO_SO_HA_TANG, ACTIVE), CS_DRAFT01 (DRAFT)
-- Requests: REQ001 (OPEN, THON01+THON02), REQ002 (COMPLETED), REQ003 (OPEN, THON02 only)
-
-## Firestore paths (from utils/firestore.js paths{})
+## Key Paths (firestore.js)
 ```
 users/{userId}
-xa_registry/{xaCode}
+communes/{xaCode}/indicators/{id}
+communes/{xaCode}/requests/{id}
+communes/{xaCode}/submissions/{id}
 communes/{xaCode}/manifests/current
-communes/{xaCode}/indicators/{indicatorId}
-communes/{xaCode}/requests/{reqId}
-communes/{xaCode}/submissions/{submissionId}
-audit_logs/  (auto-id)
+communes/{xaCode}/config/sync_state    ← NEW (sync checkpoint)
+xa_registry/{xaCode}                   ← has sheets_id, status
+audit_logs/{auto-id}
 ```
 
-## Submission document structure
-```js
-{
-  submission_id, req_id, thon_code,
-  submitted_by: user.id,        // = user.user_id
-  submitted_at, device_collected_at,
-  values: { [chi_so_id]: value },
-  anh_urls: [],
-  manifest_version_used,
-  status: "PENDING_VERIFY" | "IN_REVIEW" | "VERIFIED" | "NEEDS_REVISION",
-  indicator_reviews: {          // added by verifyData
-    [chi_so_id]: { status: "pending"|"confirmed"|"needs_review"|"rejected", review_note? }
-  },
-  verify_mode: "batch" | "per_indicator",
-  verified_by, verified_at,
-  verify_comment,
-  flagged: bool,
-  rejection_reason: null,
-  resubmitted_by, resubmitted_at,
-  year
-}
-```
-
-## constants.js — key values
-```js
-ROLES:      ADMIN, LANH_DAO, CB_CHUYEN_MON, CB_THON
-NHANH:      UBND, MTTQ, DANG
-ACTIONS:    login, logout, pull_manifest, push_data,
-            create_indicator, approve_indicator, create_request,
-            verify_data, verify_data_resubmit, get_dashboard
-ERROR_CODES: AUTH_001/002, PERM_001/002, DATA_001–005, SYNC_001, SYS_001
-INDICATOR_STATUS: DRAFT, PENDING, ACTIVE, ARCHIVED
-REQUEST_STATUS:   OPEN, IN_PROGRESS, COMPLETED, CANCELLED
-SUBMISSION_STATUS: PENDING_VERIFY, IN_REVIEW, VERIFIED, NEEDS_REVISION, REJECTED
-```
-
-## PERMISSION_MATRIX — key rules
-- push_data:         CB_THON only; user.don_vi ∈ request.danh_sach_thon
-- create_indicator:  ADMIN/LANH_DAO/CB_CHUYEN_MON; CB_CM: linh_vuc ∈ linh_vuc_codes
-- approve_indicator: ADMIN/LANH_DAO; nhanh match
-- create_request:    ADMIN/LANH_DAO/CB_CHUYEN_MON; CB_CM: all linh_vuc ∈ linh_vuc_codes
-- verify_data:       ADMIN/LANH_DAO/CB_CHUYEN_MON; nhanh match
-- verify_data_resubmit: CB_THON only; submitted_by must match user
-- get_dashboard:     ADMIN/LANH_DAO only
-
-## index.js endpoints
-POST /login, /logout, /pull_manifest
-POST /push_data
-POST /create_indicator, /approve_indicator
-POST /create_request
-POST /verify_data, /resubmit_data
-GET  /dashboard
-POST /sync_to_sheets  (X-Internal-Secret header required)
-
-## Test file pattern
-```js
-// plain Node.js https, no external deps
-// async function runTests()
-// check(label, condition, detail) helper
-// SETUP: login → create fixtures → run tests
-// node tests/test_xxx.js
-```
-
-## Remaining work
-1. handlers/dashboard.js — getDashboard (GET /dashboard, LANH_DAO+ADMIN)
-2. handlers/sync.js — syncToSheets (POST /sync_to_sheets, Cloud Scheduler)
+## Seeded Test Data (XATEST, year 2025)
+- Indicators: CS001 (NONG_NGHIEP), CS002 (XA_HOI), CS003 (CO_SO_HA_TANG), CS_DRAFT01
+- Requests: REQ001 (OPEN, THON01+THON02), REQ002 (COMPLETED), REQ003 (OPEN, THON02 only)
