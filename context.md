@@ -1,4 +1,4 @@
-# PROMPT HOÀN CHỈNH — HỆ THỐNG THU THẬP DỮ LIỆU THÔN/XÃ
+# HỆ THỐNG THU THẬP DỮ LIỆU THÔN/XÃ
 ## GOOGLE CLOUD FUNCTIONS + FIRESTORE + OFFLINE-FIRST ARCHITECTURE
 ## Version 2.0 — Production-Ready, Scales to 500+ communes
 
