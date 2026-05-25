@@ -38,22 +38,16 @@ const CONFIG = {
     year:     2025,
   },
 
-  // A valid OPEN request that targets the CB_THON's village
-  OPEN_REQ_ID: "FILL_IN",        // e.g. "REQ001"
+  OPEN_REQ_ID:   "REQ001",
+  CLOSED_REQ_ID: "REQ002",
+  CHI_SO_IDS:    ["CS001", "CS002", "CS003"],
 
-  // A request that is CLOSED/COMPLETED (for T05)
-  CLOSED_REQ_ID: "FILL_IN",      // e.g. "REQ002" — status: COMPLETED
-
-  // A valid LANH_DAO account (for T07 wrong-role test)
   LANH_DAO: {
-    user_id:  "FILL_IN",
-    password: "FILL_IN",
-    xa_code:  "FILL_IN",
+    user_id:  "USR_LANHDAO",
+    password: "Test@1234",
+    xa_code:  "XATEST",
     year:     2025,
   },
-
-  // Chi so IDs that belong to the request above
-  CHI_SO_IDS: ["CS001", "CS002"], // adjust to your actual data
 };
 // ─────────────────────────────────────────────────────────────
 
