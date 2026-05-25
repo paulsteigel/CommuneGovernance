@@ -31,13 +31,11 @@ const http  = require("http");
 const CONFIG = {
   BASE_URL: "https://careapi-cx7avsd4pa-as.a.run.app",
 
-  // Valid CB_THON user — get token via POST /login first
   CB_THON: {
-    user_id:  "FILL_IN",   // e.g. "USR001"
-    password: "FILL_IN",
-    xa_code:  "FILL_IN",   // e.g. "XALAOBAO"
+    user_id:  "USR001",        // ← user_id thật trong Firestore
+    password: "matkhau123",    // ← password thật (plain text)
+    xa_code:  "XALAOBAO",      // ← xa_code thật
     year:     2025,
-    // don_vi (thôn code) — must match what's in Firestore users doc
   },
 
   // A valid OPEN request that targets the CB_THON's village
