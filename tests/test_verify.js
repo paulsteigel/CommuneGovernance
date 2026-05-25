@@ -93,9 +93,9 @@ async function runTests() {
   // ════════════════════════════════════════════════════════════
   console.log("── SETUP: Login ──");
   const [loginLD, loginCM, loginThon] = await Promise.all([
-    post("/login", { user_id: CONFIG.LANH_DAO.user_id, password: CONFIG.LANH_DAO.password, xa_code: CONFIG.LANH_DAO.xa_code }),
-    post("/login", { user_id: CONFIG.CB_CM.user_id,    password: CONFIG.CB_CM.password,    xa_code: CONFIG.CB_CM.xa_code    }),
-    post("/login", { user_id: CONFIG.CB_THON.user_id,  password: CONFIG.CB_THON.password,  xa_code: CONFIG.CB_THON.xa_code  }),
+    post("/login", CONFIG.LANH_DAO),
+    post("/login", CONFIG.CB_CM),
+    post("/login", CONFIG.CB_THON),
   ]);
   check("LANH_DAO login",  loginLD.body.success  === true, loginLD.body.error_code);
   check("CB_CM login",     loginCM.body.success   === true, loginCM.body.error_code);
