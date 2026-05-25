@@ -96,12 +96,13 @@ const REQUEST_STATUS = {
 // ============================================================
 // SUBMISSION STATUS
 // ============================================================
+/*
 const SUBMISSION_STATUS = {
   PENDING_VERIFY: "PENDING_VERIFY",
   VERIFIED:       "VERIFIED",
   REJECTED:       "REJECTED",
 };
-
+*/
 // ============================================================
 // PERMISSION MATRIX
 //
