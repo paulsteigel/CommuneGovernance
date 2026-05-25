@@ -36,6 +36,7 @@ const ACTIONS = {
   CREATE_REQUEST:     "create_request",
   VERIFY_DATA:        "verify_data",
   GET_DASHBOARD:      "get_dashboard",
+  SYNC_SHEETS:        "sync_sheets",
   VERIFY_DATA_RESUBMIT: "verify_data_resubmit",
 };
 
@@ -97,11 +98,6 @@ const REQUEST_STATUS = {
 // SUBMISSION STATUS
 // ============================================================
 /*
-const SUBMISSION_STATUS = {
-  PENDING_VERIFY: "PENDING_VERIFY",
-  VERIFIED:       "VERIFIED",
-  REJECTED:       "REJECTED",
-};
 */
 // ============================================================
 // PERMISSION MATRIX
