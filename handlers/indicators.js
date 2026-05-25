@@ -109,8 +109,9 @@ async function createIndicator(req, res) {
   // ── 4. Write indicator doc ─────────────────────────────────
   // Use Firestore auto-ID as chi_so_id for uniqueness guarantee.
   // Format: CS_ + first 8 chars of doc ID (uppercase) for readability.
-  const newRef    = db.collection(`communes/${xa_code}/indicators`).doc();
-  const chi_so_id = `CS_${newRef.id.substring(0, 8).toUpperCase()}`;
+  const tempRef   = db.collection(`communes/${xa_code}/indicators`).doc();
+  const chi_so_id = `CS_${tempRef.id.substring(0, 8).toUpperCase()}`;
+  const newRef    = db.collection(`communes/${xa_code}/indicators`).doc(chi_so_id);
   const now       = serverTimestamp();
 
   await newRef.set({
