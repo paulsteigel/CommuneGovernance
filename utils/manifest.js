@@ -191,7 +191,7 @@ async function rebuildManifest(xa_code, year) {
 
   const manifest = {
     version,
-    generated_at:    new Date().toISOString(),
+    generated_at:    serverTimestamp(),
     xa_code,
     xa_name:         xaData.xa_name || xa_code,
     year,
@@ -233,7 +233,8 @@ async function rebuildManifest(xa_code, year) {
 
 function _expiresAt(generatedAt) {
   if (!generatedAt) return null;
-  const d = new Date(generatedAt);
+  // Handle both Firestore Timestamp object and plain ISO string
+  const d = generatedAt.toDate ? generatedAt.toDate() : new Date(generatedAt);
   d.setHours(d.getHours() + QUOTA.MANIFEST_TTL_HOURS);
   return d.toISOString();
 }
