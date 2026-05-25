@@ -32,9 +32,9 @@ const CONFIG = {
   BASE_URL: "https://careapi-cx7avsd4pa-as.a.run.app",
 
   CB_THON: {
-    user_id:  "USR001",        // ← user_id thật trong Firestore
-    password: "matkhau123",    // ← password thật (plain text)
-    xa_code:  "XALAOBAO",      // ← xa_code thật
+    user_id:  "USR_THON01",
+    password: "Test@1234",
+    xa_code:  "XATEST",
     year:     2025,
   },
 
