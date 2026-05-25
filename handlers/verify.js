@@ -156,8 +156,11 @@ async function verifyData(req, res) {
 
   // ── 6. Permission check ───────────────────────────────────
   // Roles: CB_CHUYEN_MON, LANH_DAO, ADMIN (enforced in PERMISSION_MATRIX)
-  // Scope: nhanh must match request's nhanh
-  checkPermission(user, ACTIONS.VERIFY_DATA, { nhanh: request.nhanh });
+  // Scope: nhanh must match + CB_CM must cover all linh_vuc in the request
+  checkPermission(user, ACTIONS.VERIFY_DATA, {
+    nhanh:         request.nhanh,
+    linh_vuc_list: request.linh_vuc_list || [],
+  });
 
   // ── 7. Per-indicator: validate incoming reviews ───────────
   if (verify_mode === "per_indicator") {
@@ -285,18 +288,20 @@ async function resubmitData(req, res) {
 
   const sub = subSnap.data();
 
-  // ── 4. State check ────────────────────────────────────────
+  // ── 4. Permission check ───────────────────────────────────
+  // Only CB_THON can resubmit, and only their own submission.
+  // Must be checked BEFORE state check so wrong-role callers
+  // always get PERM_001 (not DATA_005 based on current state).
+  checkPermission(user, ACTIONS.VERIFY_DATA_RESUBMIT, {
+    submitted_by: sub.submitted_by,
+  });
+
+  // ── 5. State check ────────────────────────────────────────
   if (sub.status !== SUBMISSION_STATUS.NEEDS_REVISION) {
     return errorResponse(res, ERROR_CODES.DATA_005,
       `Không thể resubmit ở trạng thái "${sub.status}". ` +
       `Phải là: ${SUBMISSION_STATUS.NEEDS_REVISION}`);
   }
-
-  // ── 5. Permission check ───────────────────────────────────
-  // Only CB_THON can resubmit, and only their own submission
-  checkPermission(user, ACTIONS.VERIFY_DATA_RESUBMIT, {
-    submitted_by: sub.submitted_by,
-  });
 
   // ── 6. Rebuild indicator_reviews and values ───────────────
   const existing_reviews = sub.indicator_reviews || {};

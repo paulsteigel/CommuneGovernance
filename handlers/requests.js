@@ -118,17 +118,18 @@ async function createRequest(req, res) {
 
   await newRef.set({
     req_id,
-    tieu_de:         tieu_de.trim(),
-    tao_boi:         user.id,
-    nhanh:           user.nhanh,
+    tieu_de:          tieu_de.trim(),
+    tao_boi:          user.id,
+    nhanh:            user.nhanh,
     danh_sach_thon,
-    chi_so_ids:      uniqueChiSoIds,
+    chi_so_ids:       uniqueChiSoIds,
+    linh_vuc_list,    // used by verifyData permission check for CB_CM scope
     deadline,
-    ghi_chu:         ghi_chu ? ghi_chu.trim() : null,
-    status:          REQUEST_STATUS.OPEN,
+    ghi_chu:          ghi_chu ? ghi_chu.trim() : null,
+    status:           REQUEST_STATUS.OPEN,
     manifest_version: null,    // updated after rebuildManifest below
-    created_at:      serverTimestamp(),
-    year:            yearNum,
+    created_at:       serverTimestamp(),
+    year:             yearNum,
   });
 
   // ── 6. Audit log ──────────────────────────────────────────

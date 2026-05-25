@@ -222,8 +222,9 @@ const PERMISSION_MATRIX = {
     },
   },
 
-  // CB_CM: can verify submissions for their linh_vuc_codes + nhanh
-  // LANH_DAO: nhanh match
+  // CB_CM: can verify submissions where ALL linh_vuc in the request are
+  //        covered by their linh_vuc_codes, AND nhanh matches.
+  // LANH_DAO: nhanh match only (can span all linh_vuc within their nhanh)
   // ADMIN: no restriction
   [ACTIONS.VERIFY_DATA]: {
     allowedRoles: [ROLES.ADMIN, ROLES.LANH_DAO, ROLES.CB_CHUYEN_MON],
@@ -231,12 +232,17 @@ const PERMISSION_MATRIX = {
       if (user.vai_tro === ROLES.ADMIN) return;
       _checkNhanh(user, scope);
       if (user.vai_tro === ROLES.CB_CHUYEN_MON) {
-        const { linh_vuc } = scope;
-        if (!Array.isArray(user.linh_vuc_codes) || !user.linh_vuc_codes.includes(linh_vuc)) {
-          throw {
-            code: ERROR_CODES.PERM_002,
-            message: `Lĩnh vực ${linh_vuc} không thuộc phạm vi của bạn`,
-          };
+        const { linh_vuc_list } = scope;
+        if (Array.isArray(linh_vuc_list) && linh_vuc_list.length > 0) {
+          const unauthorized = linh_vuc_list.filter(
+            lv => !Array.isArray(user.linh_vuc_codes) || !user.linh_vuc_codes.includes(lv)
+          );
+          if (unauthorized.length > 0) {
+            throw {
+              code: ERROR_CODES.PERM_002,
+              message: `Lĩnh vực [${unauthorized.join(", ")}] không thuộc phạm vi của bạn`,
+            };
+          }
         }
       }
     },
