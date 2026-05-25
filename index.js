@@ -42,6 +42,11 @@ app.post("/push_data", asyncHandler(async (req, res) => {
   return dataHandler.pushData(req, res);
 }));
 
+app.post("/resubmit_data", asyncHandler(async (req, res) => {
+  if (!verifyHandler) verifyHandler = require("./handlers/verify");
+  return verifyHandler.resubmitData(req, res);
+}));
+
 // ── Management endpoints (online, CB_CM + LANH_DAO) ───────────
 app.post("/create_indicator", asyncHandler(async (req, res) => {
   if (!indicatorsHandler) indicatorsHandler = require("./handlers/indicators");

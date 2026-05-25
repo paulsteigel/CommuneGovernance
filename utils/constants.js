@@ -36,6 +36,15 @@ const ACTIONS = {
   CREATE_REQUEST:     "create_request",
   VERIFY_DATA:        "verify_data",
   GET_DASHBOARD:      "get_dashboard",
+  VERIFY_DATA_RESUBMIT: "verify_data_resubmit",
+};
+
+const SUBMISSION_STATUS = {
+  PENDING_VERIFY: "PENDING_VERIFY",
+  IN_REVIEW:      "IN_REVIEW",       // ← NEW
+  VERIFIED:       "VERIFIED",
+  NEEDS_REVISION: "NEEDS_REVISION",  // ← NEW
+  REJECTED:       "REJECTED",        // kept for compat
 };
 
 // ============================================================
@@ -228,6 +237,16 @@ const PERMISSION_MATRIX = {
             message: `Lĩnh vực ${linh_vuc} không thuộc phạm vi của bạn`,
           };
         }
+      }
+    },
+  },
+
+  [ACTIONS.VERIFY_DATA_RESUBMIT]: {  // ← NEW entry
+    allowedRoles: [ROLES.CB_THON],
+    scopeCheck: (user, scope) => {
+      const { submitted_by } = scope;
+      if (submitted_by && submitted_by !== user.user_id) {
+        throw { code: ERROR_CODES.PERM_002, message: "Bạn không thể resubmit dữ liệu của người khác" };
       }
     },
   },
