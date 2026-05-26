@@ -22,3 +22,10 @@ ui-debug.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Expo app
+app/node_modules/
+app/.expo/
+app/dist/
+app/android/
+app/ios/
