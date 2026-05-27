@@ -39,9 +39,7 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
   // ── Indicator filtering ──────────────────────────────────
   if (vai_tro === ROLES.CB_THON) {
     // CB_THON sees all active indicators (needed to understand form)
-    // No filter needed — already only ACTIVE in manifest
   } else if (vai_tro === ROLES.CB_CHUYEN_MON) {
-    // CB_CM sees only indicators in their linh_vuc
     const allowedLv = new Set(linh_vuc_codes || []);
     indicators = indicators.filter(i => allowedLv.has(i.linh_vuc));
   }
@@ -49,21 +47,18 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
 
   // ── Request filtering ────────────────────────────────────
   if (vai_tro === ROLES.CB_THON) {
-    // R4: CB_THON only sees requests that include their thon
     requests = requests
       .filter(r => Array.isArray(r.danh_sach_thon) && r.danh_sach_thon.includes(don_vi))
       .map(r => ({
         ...r,
         has_submitted: submittedReqIds.has(r.req_id),
-        submitted_at:  null, // populated below if needed
+        submitted_at:  null,
       }));
   } else if (vai_tro === ROLES.CB_CHUYEN_MON) {
-    // CB_CM sees requests they created OR requests containing their linh_vuc
     const allowedLv = new Set(linh_vuc_codes || []);
     requests = requests.filter(r =>
       r.tao_boi === user.user_id ||
       (Array.isArray(r.chi_so_ids) && r.chi_so_ids.some(id => {
-        // Match request's indicator linh_vuc — already embedded in manifest request data
         const ind = (fullManifest.indicators || []).find(i => i.chi_so_id === id);
         return ind && allowedLv.has(ind.linh_vuc);
       }))
@@ -100,36 +95,44 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
 // PUBLIC: buildManifest
 // Reads Firestore and returns a filtered manifest for this user.
 //
-// Quota: 2 reads (manifests/current + submissions query for CB_THON)
-//        instead of 3+ collection reads.
+// Quota:
+//   CB_THON:       2 reads (manifest + submissions for has_submitted)
+//   CB_CHUYEN_MON: 2 reads (manifest + submissions for pending_verifications)
+//   Others:        1 read  (manifest only)
 //
 // Conditional fetch: if client_version matches current, skip full
 // manifest read and return { up_to_date: true } — saves 1 read.
+//
+// year param is optional: if null/undefined, auto-detected from
+// the stored manifest document (supports login without year in body).
 // ============================================================
 
 /**
  * Build and return a filtered manifest for the user.
  *
- * @param {string} xa_code        - Commune code
- * @param {number} year           - Data year
- * @param {object} user           - Authenticated user
- * @param {string} [client_version] - Client's current manifest version (conditional fetch)
- * @returns {Promise<object>}     - { up_to_date: true } OR filtered manifest
+ * @param {string}      xa_code          - Commune code
+ * @param {number|null} year             - Data year (null = auto-detect from manifest)
+ * @param {object}      user             - Authenticated user
+ * @param {string}      [client_version] - Client's current manifest version (conditional fetch)
+ * @returns {Promise<object>}            - { up_to_date: true } OR filtered manifest
  */
 async function buildManifest(xa_code, year, user, client_version = null) {
-  // Read 1: pre-computed manifest (1 Firestore read)
+  // Read 1: pre-computed manifest
   const manifestSnap = await paths.manifest(xa_code).get();
 
   if (!manifestSnap.exists) {
-    // First time — build from scratch
-    await rebuildManifest(xa_code, year);
-    return buildManifest(xa_code, year, user, null); // retry once
+    // First time — build from scratch; year must be known here
+    const effectiveYear = year || new Date().getFullYear();
+    await rebuildManifest(xa_code, effectiveYear);
+    return buildManifest(xa_code, effectiveYear, user, null);
   }
 
   const fullManifest = manifestSnap.data();
 
+  // FIX BUG-A1 support: auto-detect year from manifest if caller didn't pass one
+  const effectiveYear = year || fullManifest.year;
+
   // ── Conditional fetch optimization ──────────────────────
-  // If client already has current version, skip filtering and return flag.
   if (
     QUOTA.MANIFEST_CONDITIONAL_FETCH &&
     client_version &&
@@ -138,20 +141,73 @@ async function buildManifest(xa_code, year, user, client_version = null) {
     return { up_to_date: true, manifest_version: fullManifest.version };
   }
 
-  // Read 2 (CB_THON only): check which requests already submitted
-  // to add has_submitted flag — saves client an extra API call.
+  // ── Read 2a (CB_THON): has_submitted flags ───────────────
   let submittedReqIds = new Set();
   if (user.vai_tro === ROLES.CB_THON) {
     const subs = await queryAll(
       paths.submissions(xa_code)
         .where("thon_code", "==", user.don_vi)
-        .where("year", "==", year)
-        .select("req_id") // fetch only req_id field — fewer bytes
+        .where("year", "==", effectiveYear)
+        .select("req_id")
     );
     submittedReqIds = new Set(subs.map(s => s.req_id));
   }
 
-  return filterManifestForUser(fullManifest, user, submittedReqIds);
+  const filtered = filterManifestForUser(fullManifest, user, submittedReqIds);
+
+  // ── Read 2b (CB_CM): pending_verifications ───────────────
+  // FIX BUG-B2: CB_CM cần thấy danh sách submissions đang chờ duyệt.
+  if (user.vai_tro === ROLES.CB_CHUYEN_MON) {
+    const allowedLv = new Set(user.linh_vuc_codes || []);
+
+    // Tìm req_ids trong linh_vuc của CB_CM này
+    const relevantReqIds = new Set(
+      (fullManifest.requests || [])
+        .filter(r =>
+          Array.isArray(r.chi_so_ids) &&
+          r.chi_so_ids.some(id => {
+            const ind = (fullManifest.indicators || []).find(i => i.chi_so_id === id);
+            return ind && allowedLv.has(ind.linh_vuc);
+          })
+        )
+        .map(r => r.req_id || r.id)
+    );
+
+    if (relevantReqIds.size > 0) {
+      const subs = await queryAll(
+        paths.submissions(xa_code)
+          .where("year", "==", effectiveYear)
+          .where("status", "in", [
+            "PENDING_VERIFY",
+            "IN_REVIEW",
+            "NEEDS_REVISION",
+            "VERIFIED",
+          ])
+      );
+
+      filtered.pending_verifications = subs
+        .filter(s => relevantReqIds.has(s.req_id))
+        .map(s => {
+          const req = (fullManifest.requests || []).find(
+            r => (r.req_id || r.id) === s.req_id
+          );
+          return {
+            submission_id: s.submission_id || s.id,
+            req_id:        s.req_id,
+            thon_code:     s.thon_code,
+            status:        s.status,
+            submitted_by:  s.submitted_by,
+            submitted_at:  s.submitted_at,
+            values:        s.values || {},
+            tieu_de:       req?.tieu_de || s.req_id,
+          };
+        });
+    } else {
+      filtered.pending_verifications = [];
+    }
+  }
+
+  return filtered;
 }
 
 // ============================================================
@@ -159,7 +215,7 @@ async function buildManifest(xa_code, year, user, client_version = null) {
 // Reads all ACTIVE indicators + OPEN requests, writes to
 // manifests/current. Called after every indicator/request change.
 //
-// Quota: 2 collection reads (indicators + requests) + 1 write.
+// Quota: 2 collection reads + 1 write.
 // ============================================================
 
 /**
@@ -171,7 +227,6 @@ async function buildManifest(xa_code, year, user, client_version = null) {
  * @returns {Promise<string>} - New manifest version string
  */
 async function rebuildManifest(xa_code, year) {
-  // Parallel reads — 2 Firestore reads at the same time
   const [indicators, requests, xaSnap] = await Promise.all([
     queryAll(
       paths.indicators(xa_code)
@@ -186,7 +241,7 @@ async function rebuildManifest(xa_code, year) {
     paths.xa(xa_code).get(),
   ]);
 
-  const xaData = xaSnap.exists ? xaSnap.data() : {};
+  const xaData  = xaSnap.exists ? xaSnap.data() : {};
   const version = `v${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 15)}`;
 
   const manifest = {
@@ -197,7 +252,6 @@ async function rebuildManifest(xa_code, year) {
     year,
     drive_folder_id: xaData.drive_folder_id || null,
 
-    // Indicators: store only fields needed by client
     indicators: indicators.map(i => ({
       chi_so_id:    i.chi_so_id || i.id,
       ten_chi_so:   i.ten_chi_so,
@@ -208,22 +262,20 @@ async function rebuildManifest(xa_code, year) {
       validation:   i.validation || {},
     })),
 
-    // Requests: store only fields needed by client
-    // danh_sach_thon is kept for server-side filtering
+    // FIX BUG-B1: normalize chi_so_ids + danh_sach_thon thành array
+    // phòng trường hợp Firestore lưu sai dạng string "CS001 CS002"
     requests: requests.map(r => ({
       req_id:         r.req_id || r.id,
       tieu_de:        r.tieu_de,
-      chi_so_ids:     r.chi_so_ids || [],
-      danh_sach_thon: r.danh_sach_thon || [],
+      chi_so_ids:     _toArray(r.chi_so_ids),
+      danh_sach_thon: _toArray(r.danh_sach_thon),
       deadline:       r.deadline || null,
       ghi_chu:        r.ghi_chu || null,
       tao_boi:        r.tao_boi || null,
     })),
   };
 
-  // 1 Firestore write
   await paths.manifest(xa_code).set(manifest);
-
   return version;
 }
 
@@ -231,9 +283,18 @@ async function rebuildManifest(xa_code, year) {
 // INTERNAL HELPERS
 // ============================================================
 
+/**
+ * Normalize a value to array.
+ * Handles: already array, space-separated string, undefined/null.
+ */
+function _toArray(val) {
+  if (Array.isArray(val)) return val;
+  if (!val) return [];
+  return String(val).split(/\s+/).filter(Boolean);
+}
+
 function _expiresAt(generatedAt) {
   if (!generatedAt) return null;
-  // Handle both Firestore Timestamp object and plain ISO string
   const d = generatedAt.toDate ? generatedAt.toDate() : new Date(generatedAt);
   d.setHours(d.getHours() + QUOTA.MANIFEST_TTL_HOURS);
   return d.toISOString();

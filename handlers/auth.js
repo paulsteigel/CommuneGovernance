@@ -12,21 +12,28 @@ const { ACTIONS, ERROR_CODES, QUOTA }    = require("../utils/constants");
 // ============================================================
 // LOGIN
 //
-// Quota: 1 read (user doc) + 1 write (update token) + 2 reads (manifest)
-// Total: 4 Firestore ops per login — minimum possible.
+// FIX BUG-A1: xa_code và year không còn bắt buộc từ body.
+//   xa_code → luôn lấy từ user record trong Firestore (trusted source).
+//   year    → auto-detect từ manifest (xem buildManifest).
+//   Body cũ { user_id, password, xa_code, year } vẫn tương thích
+//   (xa_code/year trong body bị ignore — không dùng nữa).
+//
+// Quota: 1 read (user) + 1 write (token) + 2 reads (manifest + subs)
+// Total: 4 Firestore ops — không đổi so với trước.
 // ============================================================
 
 /**
  * POST /login
- * Body: { user_id, password, xa_code, year }
+ * Body: { user_id, password }
+ * Body cũ: { user_id, password, xa_code, year } — vẫn tương thích, xa_code/year bị ignore
  */
 async function login(req, res) {
-  const { user_id, password, xa_code, year } = req.body;
+  const { user_id, password } = req.body;
 
   // ── Input validation ─────────────────────────────────────
-  if (!user_id || !password || !xa_code || !year) {
+  if (!user_id || !password) {
     return errorResponse(res, ERROR_CODES.DATA_001,
-      "Thiếu thông tin đăng nhập (user_id, password, xa_code, year)");
+      "Thiếu thông tin đăng nhập (user_id, password)");
   }
 
   // ── Read user — 1 Firestore read ─────────────────────────
@@ -37,14 +44,14 @@ async function login(req, res) {
 
   const user = { id: userSnap.id, ...userSnap.data() };
 
-  // Check account status
   if (user.status !== "ACTIVE") {
     return errorResponse(res, ERROR_CODES.AUTH_002, "Tài khoản đã bị vô hiệu hóa");
   }
 
-  // Check xa_code matches user's commune
-  if (user.xa_code !== xa_code) {
-    return errorResponse(res, ERROR_CODES.AUTH_002, "Sai tên đăng nhập hoặc mật khẩu");
+  // FIX BUG-A1: xa_code luôn từ user record — không tin body
+  const xa_code = user.xa_code;
+  if (!xa_code) {
+    return errorResponse(res, ERROR_CODES.AUTH_002, "Tài khoản chưa được phân xã");
   }
 
   // ── Password verification ────────────────────────────────
@@ -54,8 +61,8 @@ async function login(req, res) {
   }
 
   // ── Generate new session token ───────────────────────────
-  const newToken   = generateToken();
-  const expiresAt  = tokenExpiresAt(QUOTA.TOKEN_TTL_DAYS);
+  const newToken  = generateToken();
+  const expiresAt = tokenExpiresAt(QUOTA.TOKEN_TTL_DAYS);
 
   // ── Write token — 1 Firestore write ─────────────────────
   await paths.user(user_id).update({
@@ -64,16 +71,16 @@ async function login(req, res) {
     last_login_at:    serverTimestamp(),
   });
 
-  // Update user object for manifest building
   user.session_token    = newToken;
   user.token_expires_at = expiresAt;
 
-  // ── Build filtered manifest — 2 reads ───────────────────
-  // Login always fetches fresh manifest (no conditional fetch on login)
-  const manifest = await buildManifest(xa_code, Number(year), user, null);
+  // ── Build filtered manifest — 1-2 reads ─────────────────
+  // year=null → buildManifest tự detect từ manifest document
+  // Login luôn fetch fresh (no conditional fetch → client_version=null)
+  const manifest = await buildManifest(xa_code, null, user, null);
 
   // ── Audit log ────────────────────────────────────────────
-  await logAudit(user, ACTIONS.LOGIN, { xa_code, year }, req);
+  await logAudit(user, ACTIONS.LOGIN, { xa_code }, req);
 
   return successResponse(res, {
     token:    newToken,
@@ -92,12 +99,9 @@ async function login(req, res) {
  * Body: { token, user_id, xa_code, year }
  */
 async function logout(req, res) {
-  // Validate token first (also attaches req.user)
   const user = await validateToken(req);
-
   checkPermission(user, ACTIONS.LOGOUT);
 
-  // Clear token from Firestore — 1 write
   await paths.user(user.id).update({
     session_token:    null,
     token_expires_at: null,
@@ -123,7 +127,6 @@ async function logout(req, res) {
  */
 async function pullManifest(req, res) {
   const user = await validateToken(req);
-
   checkPermission(user, ACTIONS.PULL_MANIFEST);
 
   const { xa_code, year, current_version } = req.body;
@@ -132,7 +135,6 @@ async function pullManifest(req, res) {
     return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu xa_code hoặc year");
   }
 
-  // Build manifest — conditional fetch handled inside buildManifest
   const manifest = await buildManifest(
     xa_code,
     Number(year),
@@ -140,7 +142,6 @@ async function pullManifest(req, res) {
     current_version || null
   );
 
-  // If manifest is current, return lightweight response (save bytes + quota)
   if (manifest.up_to_date) {
     return successResponse(res, {
       up_to_date:       true,

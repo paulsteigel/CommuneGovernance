@@ -1,684 +1,558 @@
-# HỆ THỐNG THU THẬP DỮ LIỆU THÔN/XÃ
-## GOOGLE CLOUD FUNCTIONS + FIRESTORE + OFFLINE-FIRST ARCHITECTURE
-## Version 2.0 — Production-Ready, Scales to 500+ communes
+# CommuneGovernance — CARE Vietnam
+## Full Context Document — V3 (27/05/2026)
 
 ---
 
-## 1. BỐI CẢNH DỰ ÁN
+## 1. HẠ TẦNG & CÔNG NGHỆ
 
-Ứng dụng Android (React Native) cho cán bộ thôn thu thập dữ liệu
-và báo cáo lên xã — phục vụ vùng nông thôn/DTTS Việt Nam.
+| Item | Value |
+|---|---|
+| API Live | https://careapi-cx7avsd4pa-as.a.run.app |
+| Firebase Project | `communegovernance` — account `ngocdd@thiennhienviet.org.vn` |
+| Backend Local | `F:\Developers\CARE\CommuneGovernance\` |
+| App Local | `F:\Developers\CARE\CommuneGovernance\app\` |
+| Backend Runtime | Node 24, Firebase Functions v2, Cloud Run `asia-southeast1` |
+| App Stack | Expo SDK **52** (package.json), EAS Build, project `@paulsteigel/commune-governance` |
+| App Build | EAS cloud build — `eas build --platform android --profile preview` (APK) |
+| Note | Expo Go không dùng được vì có native module `@react-native-community/netinfo` |
 
-Pilot: 4 xã tỉnh Quảng Trị. Target: 500+ xã toàn quốc.
-Usage pattern: 1 user/device tại một thời điểm (không có concurrent
-multi-user trên cùng thiết bị).
+> ⚠️ **Discrepancy**: Context cũ ghi "Expo SDK 56" nhưng `package.json` thực tế là `"expo": "~52.0.0"`. Cần xác nhận lại version đang dùng khi build.
 
-### Nguyên tắc thiết kế bất biến
-- OFFLINE-FIRST: Mỗi session = 1 read (pull) + 1 write (push). Không
-  có call nào khác trong lúc user nhập liệu.
-- ZERO VM: Không setup, không maintain server. Toàn bộ là managed
-  services.
-- SHEETS LÀ OUTPUT: Google Sheets chỉ để CARE staff xem báo cáo —
-  không phải database.
-- SCALE KHÔNG ĐỔI KIẾN TRÚC: Từ 4 lên 500 xã chỉ thêm data,
-  không sửa code.
+### Test Users (xa: XATEST, password: Test@1234)
 
----
+| user_id | vai_tro | nhanh | linh_vuc_codes |
+|---|---|---|---|
+| USR_THON01 | CB_THON | UBND | null |
+| USR_CBCM01 | CB_CHUYEN_MON | UBND | [NONG_NGHIEP, XA_HOI] |
+| USR_LANHDAO | LANH_DAO | UBND | null |
 
-## 2. TECHNOLOGY STACK
+`INTERNAL_SECRET = "care-commune-sync-2025-secret-key-minimum32chars"`
 
-| Layer         | Technology                  | Lý do chọn                          |
-|---------------|-----------------------------|--------------------------------------|
-| API           | Google Cloud Functions (v2) | 2M calls/tháng free, serverless thực sự, no VM |
-| Database      | Cloud Firestore             | 50K reads + 20K writes/ngày free, realtime, offline SDK |
-| Auth          | Custom token trong Firestore | Đủ đơn giản cho use case, không cần Firebase Auth |
-| Image Storage | Google Drive (Workspace)    | Nonprofit = unlimited storage        |
-| Reporting     | Google Sheets               | CARE staff quen dùng, sync đêm từ Firestore |
-| Scheduler     | Cloud Scheduler             | Trigger sync Firestore → Sheets hằng đêm |
-
-### Quota thực tế cho 500 xã
-
-```
-500 xã × 30 users × 2 calls/ngày = 30,000 calls/ngày
-Cloud Functions free: 2,000,000/tháng → dư 1.1M calls → $0
-
-Firestore reads (manifest pulls):
-500 xã × 30 reads/ngày = 15,000 reads/ngày
-Free tier: 50,000/ngày → dư 35,000 → $0
-
-Firestore writes (push_data):
-500 xã × 30 writes/ngày = 15,000 writes/ngày
-Free tier: 20,000/ngày → dư 5,000 → $0 (hoặc $0.06/100K khi vượt)
-```
+### Seeded Test Data (XATEST, year 2025)
+- **Indicators**: CS001 (NONG_NGHIEP), CS002 (XA_HOI), CS003 (CO_SO_HA_TANG), CS_DRAFT01
+- **Requests**: REQ001 (OPEN, THON01+THON02), REQ002 (COMPLETED), REQ003 (OPEN, THON02 only)
+- **Submissions**: 28 tổng — 17 verified, 9 pending_verify, 2 needs_attention
 
 ---
 
-## 3. FIRESTORE SCHEMA (Source of Truth)
+## 2. KIẾN TRÚC PHÂN LỚP APP (V3 — Mới)
 
-### 3.1 Collection: `config/xa_registry/{xa_code}`
-Thay thế Developer Sheet XA_REGISTRY.
-```
-xa_code:        "XALAOBAO"
-xa_name:        "Xã Lao Bảo"
-tinh:           "Quảng Trị"
-gmail_xa:       "ubnd.xa.laobao@gmail.com"
-drive_folder_id:"abc123xyz"   // Google Drive folder để upload ảnh
-sheets_id:      "2CyL4n..."   // Commune Sheet dùng cho reporting
-status:         "ACTIVE"
-created_at:     Timestamp
-```
+App được tổ chức thành **5 lớp chức năng** thay vì flat theo role:
 
-### 3.2 Collection: `users/{user_id}`
-Thay thế Developer Sheet USERS.
 ```
-user_id:          "USR001"
-xa_code:          "XALAOBAO"
-ho_ten:           "Nguyễn Văn A"
-vai_tro:          "CB_THON"           // ADMIN|LANH_DAO|CB_CHUYEN_MON|CB_THON
-don_vi:           "THON01"            // thôn code hoặc phòng ban hoặc "XA"
-linh_vuc_codes:   ["NONG_NGHIEP"]     // null nếu không áp dụng
-password_hash:    "sha256hex..."
-password_salt:    "randomsalt..."     // per-user salt, KHÔNG share
-session_token:    "random32chars..."
-token_expires_at: Timestamp           // 30 ngày
-status:           "ACTIVE"
-last_login_at:    Timestamp
+┌─────────────────────────────────────────────────────────────┐
+│  LỚP 1 — NGHIỆP VỤ (Business)                              │
+│  Phân theo chức năng của từng role                          │
+├─────────────────────────────────────────────────────────────┤
+│  LỚP 2 — TRÌNH BÀY DỮ LIỆU (Presentation)                  │
+│  Báo cáo tabular + biểu đồ theo lịch sử công bố            │
+├─────────────────────────────────────────────────────────────┤
+│  LỚP 3 — TIỆN ÍCH BỔ SUNG (Utilities) — Làm sau            │
+│  Báo cáo tình huống: thiên tai, sạt lở, dịch bệnh + geotag │
+├─────────────────────────────────────────────────────────────┤
+│  LỚP 4 — HỒ SƠ NGƯỜI DÙNG (Profile)                        │
+│  Thông tin user, đổi mật khẩu, cài đặt năm báo cáo         │
+├─────────────────────────────────────────────────────────────┤
+│  LỚP 5 — QUẢN TRỊ (Admin)                                   │
+│  Chỉ ADMIN + LANH_DAO: tạo user, quản lý bộ chỉ số         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 Collection: `communes/{xa_code}/indicators/{chi_so_id}`
-Thay thế tab CHI_SO trong Commune Sheet.
+### Lớp 1 — Nghiệp vụ theo Role
+
+**LANH_DAO:**
+- ✅ Dashboard tiến độ nộp số liệu theo yêu cầu
+- ✅ Xác minh/xác nhận dữ liệu thôn gửi lên (**bypass** CB_CM nếu CB_CM không làm)
+- ⬜ Nhắc nhở CB_CM xác minh / thôn thu thập thông tin (push notification hoặc in-app)
+- ✅ Review & duyệt bộ chỉ số do CB_CM trình (PENDING → ACTIVE) — nhằm tránh trùng lặp, pháp lý hóa cơ sở
+
+**CB_CHUYEN_MON:**
+- ✅ Xem + xét duyệt submissions (per_indicator hoặc batch mode)
+- ⬜ Tạo yêu cầu cung cấp thông tin (FEAT-1) — chọn bộ chỉ số theo ngành, chọn định kỳ, gửi đúng nhánh CB_THON
+- ✅ Tạo bộ chỉ số mới → trình LANH_DAO phê duyệt
+- ⚠️ Kiểm tra trùng chỉ số khi tạo (tránh 2 ngành thu thập cùng 1 chỉ số)
+
+**CB_THON:**
+- ✅ Xem danh sách yêu cầu của thôn mình
+- ✅ Thu thập và nộp số liệu (offline-first)
+- ✅ Sửa và nộp lại khi bị NEEDS_REVISION (`resubmit_data`)
+
+### Lớp 2 — Trình bày dữ liệu
+
+- **Tabular**: hiển thị số liệu đã được duyệt & công bố (VERIFIED), lọc theo lịch sử công bố để theo dõi tiến trình
+- Hiển thị theo cấp: CB_THON thấy thôn mình, CB_CM/LANH_DAO thấy toàn xã
+- **Advanced**: biểu đồ / chart cho các chỉ số định lượng (số) để thấy biến động theo thời gian
+- ⬜ **Chưa xây dựng** — cần thiết kế screen mới
+
+### Lớp 3 — Tiện ích bổ sung *(Để sau)*
+
+- Báo cáo tình huống khẩn: thiên tai, điểm sạt lở, dịch bệnh, sự cố
+- Gắn **geotag** (GPS coordinates) để thể hiện trên bản đồ
+- ⬜ **Chưa xây dựng** — cần backend endpoint + app screen mới
+
+### Lớp 4 — Hồ sơ người dùng
+
+- Thông tin cá nhân (ho_ten, vai_tro, xa_code, don_vi, nhanh)
+- Đổi mật khẩu
+- Cài đặt năm báo cáo (mặc định năm hiện tại; xem lại năm cũ read-only)
+- ⬜ **Chưa xây dựng** — liên quan FEAT-3
+
+### Lớp 5 — Quản trị *(ADMIN + LANH_DAO)*
+
+- Tạo / quản lý user (FEAT-4): set vai_tro, nhanh, don_vi, linh_vuc_codes; generate password tạm
+- Xem audit log
+- Config định kỳ mặc định cho xã
+- ⬜ **Chưa xây dựng** — cần backend POST /create_user trước
+
+---
+
+## 3. BACKEND — TRẠNG THÁI HIỆN TẠI
+
+### Deployment
+- **Deployed**: Cloud Run `asia-southeast1` ✅
+- URL: `https://careapi-cx7avsd4pa-as.a.run.app`
+
+### Endpoints đã có
+
+| Endpoint | Handler | Status |
+|---|---|---|
+| POST /login | auth.login | ✅ Deployed |
+| POST /logout | auth.logout | ✅ Deployed |
+| POST /pull_manifest | auth.pullManifest | ✅ Deployed |
+| POST /push_data | data.pushData | ✅ Deployed |
+| POST /resubmit_data | verify.resubmitData | ✅ Deployed |
+| POST /create_indicator | indicators.createIndicator | ✅ Deployed |
+| POST /approve_indicator | indicators.approveIndicator | ✅ Deployed |
+| POST /create_request | requests.createRequest | ✅ Deployed |
+| POST /verify_data | verify.verifyData | ✅ Deployed |
+| GET /dashboard | dashboard.getDashboard | ✅ Deployed |
+| POST /sync_to_sheets | sync.syncToSheets | ✅ Deployed |
+| GET /health | — | ✅ Deployed |
+
+### Endpoint cần thêm
+
+| Endpoint | Handler | Status |
+|---|---|---|
+| POST /create_user | handlers/users.js (mới) | ⬜ FEAT-4 |
+| POST /speech_token | handlers/transcribe.js | ⬜ FEAT-5 (sau cùng) |
+| POST /report_incident | handlers/incidents.js | ⬜ Lớp 3 — sau cùng |
+
+### Project Structure (Backend)
+
 ```
-chi_so_id:    "CS001"
-ten_chi_so:   "Diện tích lúa"
-mo_ta:        "Tổng diện tích canh tác lúa trong thôn"
-don_vi_do:    "ha"
-kieu_du_lieu: "so"           // so | text | boolean | anh
-linh_vuc:     "NONG_NGHIEP"
-validation: {
-  required: true,
-  min: 0,                    // chỉ dùng nếu kieu_du_lieu = "so"
-  max: 10000
-}
-created_by:   "USR002"
-status:       "DRAFT"        // DRAFT → PENDING → ACTIVE → ARCHIVED
-created_at:   Timestamp
-updated_at:   Timestamp
-approved_by:  null           // user_id khi LANH_DAO approve
-approved_at:  null
-year:         2025
+F:\Developers\CARE\CommuneGovernance\
+├── index.js                    ✅ Router Express + Cloud Function export
+├── package.json                ✅ Node 24, express, firebase-admin, googleapis
+├── firebase.json               ✅
+├── firestore.rules             ✅ deny all from client
+│
+├── handlers/
+│   ├── auth.js                 ✅ login (BUG-A1 fixed), logout, pullManifest
+│   ├── data.js                 ✅ pushData (19 tests pass)
+│   ├── indicators.js           ✅ createIndicator, approveIndicator (23 tests pass)
+│   ├── requests.js             ✅ createRequest (25 tests pass)
+│   ├── verify.js               ✅ verifyData (batch+per_indicator), resubmitData (34 tests pass)
+│   ├── dashboard.js            ✅ getDashboard
+│   └── sync.js                 ✅ syncToSheets (15 tests pass)
+│
+├── middleware/
+│   ├── validateToken.js        ✅
+│   ├── checkPermission.js      ✅ PERMISSION_MATRIX đầy đủ
+│   └── logAudit.js             ✅
+│
+├── utils/
+│   ├── firestore.js            ✅ db, paths, queryAll, serverTimestamp
+│   ├── crypto.js               ✅ hashPassword, generateToken, generateSalt
+│   ├── manifest.js             ✅ buildManifest, rebuildManifest, filterManifestForUser
+│   ├── response.js             ✅ successResponse, errorResponse, asyncHandler
+│   └── constants.js            ✅ ROLES, NHANH, ACTIONS, SUBMISSION_STATUS, ERROR_CODES, PERMISSION_MATRIX
+│
+└── tests/
+    ├── seed_test_data.js
+    ├── test_dashboard.js
+    ├── test_indicators.js
+    ├── test_push_data.js
+    ├── test_requests.js
+    ├── test_sync.js
+    └── test_verify.js
 ```
 
-### 3.4 Collection: `communes/{xa_code}/requests/{req_id}`
-Thay thế tab REQUESTS trong Commune Sheet.
+### Manifest Logic (utils/manifest.js) — Key Details
+
+**buildManifest()** — filter theo role:
+- CB_THON: requests của thôn mình + `has_submitted` flag. Read: manifest + submissions (2 reads)
+- CB_CM: requests thuộc linh_vuc của mình + `pending_verifications[]` (submissions chờ duyệt). Read: manifest + submissions (2 reads)
+- LANH_DAO/ADMIN: tất cả requests. Read: manifest (1 read)
+
+> ⚠️ **Cần kiểm tra**: File `manifest.js` trong zip hiện tại chỉ có `pending_verifications` cho `CB_CHUYEN_MON`. Context3.md nói đã thêm cho `LANH_DAO` nhưng code trong zip chưa phản ánh. Cần verify file thực tế trên server (có thể deploy đã include bản mới hơn zip).
+
+**rebuildManifest()** — BUG-B1 đã fix:
+- Normalize `chi_so_ids` và `danh_sach_thon` từ string thành array qua `_toArray()`
+- Được gọi sau mỗi create/approve indicator, create request
+
+### Submission Status Flow
+
 ```
-req_id:          "REQ001"
-tieu_de:         "Báo cáo nông nghiệp Q2/2025"
-tao_boi:         "USR002"
-danh_sach_thon:  ["THON01", "THON02", "THON03"]
-chi_so_ids:      ["CS001", "CS002"]
-deadline:        "2025-06-30"
-ghi_chu:         "Số liệu tính đến ngày 30/6"
-status:          "OPEN"       // OPEN → IN_PROGRESS → COMPLETED → CANCELLED
-manifest_version:"v20250615T103000"
-created_at:      Timestamp
-year:            2025
+PENDING_VERIFY → IN_REVIEW (CB_CM đang xem, save progress)
+              → VERIFIED   (confirmed all)
+              → NEEDS_REVISION (CB_THON phải sửa lại)
+NEEDS_REVISION → PENDING_VERIFY (sau khi CB_THON resubmit)
 ```
 
-### 3.5 Collection: `communes/{xa_code}/submissions/{submission_id}`
-Thay thế tab REQ_[id] trong Commune Sheet.
+### Roles & NHANH
+
 ```
-submission_id:         "SUB001"
-req_id:                "REQ001"
-thon_code:             "THON01"
-submitted_by:          "USR001"
-submitted_at:          Timestamp   // khi push lên server
-device_collected_at:   Timestamp   // khi user nhập trên device
-values: {
-  "CS001": 120.5,
-  "CS002": 45,
-  "CS003": true
-}
-anh_urls:              ["https://drive.google.com/..."]
-manifest_version_used: "v20250615T103000"
-status:                "PENDING_VERIFY"
-                       // PENDING_VERIFY → VERIFIED → REJECTED
-verified_by:           null
-verified_at:           null
-rejection_reason:      null
-year:                  2025
+ROLES:  ADMIN | LANH_DAO | CB_CHUYEN_MON | CB_THON
+NHANH:  UBND  | MTTQ     | DANG
 ```
 
-### 3.6 Document: `communes/{xa_code}/manifests/current`
-Pre-computed manifest, được update mỗi khi có thay đổi indicator/request.
-Không filter theo user ở đây — filtering xảy ra trong Cloud Function.
+LANH_DAO/CB_CM chỉ tạo request/indicator cho nhánh của mình (scope check theo nhanh).
+
+---
+
+## 4. APP — TRẠNG THÁI HIỆN TẠI
+
+### Tech Stack
+- React Native + Expo SDK 52 (confirmed từ package.json)
+- Expo Router (file-based routing)
+- Zustand (state management — `store/authStore`)
+- React Native Paper (UI components)
+- `@react-native-community/netinfo` (native — lý do phải EAS build)
+- `@expo/vector-icons` (Ionicons)
+
+### Project Structure (App)
+
 ```
-version:      "v20250615T103000"   // ISO timestamp khi manifest được tạo lại
-generated_at: Timestamp
-xa_code:      "XALAOBAO"
-xa_name:      "Xã Lao Bảo"
-year:         2025
-
-indicators: [   // tất cả indicators ACTIVE của xã trong năm
-  {
-    chi_so_id:    "CS001",
-    ten_chi_so:   "Diện tích lúa",
-    mo_ta:        "...",
-    don_vi_do:    "ha",
-    kieu_du_lieu: "so",
-    linh_vuc:     "NONG_NGHIEP",
-    validation:   { required: true, min: 0, max: 10000 }
-  }
-]
-
-requests: [    // tất cả requests OPEN của xã trong năm
-  {
-    req_id:         "REQ001",
-    tieu_de:        "Báo cáo nông nghiệp Q2",
-    chi_so_ids:     ["CS001", "CS002"],
-    danh_sach_thon: ["THON01", "THON02"],
-    deadline:       "2025-06-30",
-    ghi_chu:        "..."
-  }
-]
-
-drive_folder_id: "abc123"   // để client upload ảnh trực tiếp
+F:\Developers\CARE\CommuneGovernance\app\
+├── app/
+│   ├── _layout.jsx             ✅ Root layout, AuthGuard, role-based redirect
+│   ├── (auth)/
+│   │   ├── _layout.jsx         ✅
+│   │   └── login.jsx           ✅ BUG-A1+A2 fixed: 2 fields only, lưu ho_ten
+│   ├── (cb-thon)/
+│   │   ├── _layout.jsx         ✅
+│   │   ├── index.jsx           ✅ Danh sách yêu cầu, offline banner
+│   │   └── submit/[reqId].jsx  ✅ Nhập số liệu, offline queue
+│   ├── (cb-cm)/
+│   │   ├── _layout.jsx         ✅
+│   │   ├── index.jsx           ✅ Danh sách pending_verifications + filter
+│   │   └── verify/[subId].jsx  ⚠️ BUG: indicatorMap dùng ind.id thay vì ind.chi_so_id
+│   └── (lanh-dao)/
+│       ├── _layout.jsx         ⬜ Cần thêm Stack.Screen verify/[subId]
+│       ├── index.jsx           ⬜ Cần rewrite: thêm Section "Cần xử lý" + pending_verifications
+│       └── verify/[subId].jsx  ⬜ CHƯA TẠO — FEAT-2
+│
+├── store/
+│   └── authStore.js            ✅ Zustand: token, user, xa_code, year, manifest, offlineQueue
+│
+├── services/
+│   └── api.js                  ✅ login, logout, pullManifest, pushData, verifyData, getDashboard, ...
+│
+├── constants/
+│   ├── theme.js                ✅ COLORS, TYPOGRAPHY, SPACING, RADIUS, SHADOW, TOUCH_TARGET
+│   └── config.js               ✅ ROLES, CURRENT_YEAR, API_BASE_URL
+│
+├── components/
+│   ├── StatusBadge.jsx         ✅
+│   ├── LoadingOverlay.jsx      ✅
+│   └── OfflineBanner.jsx       ✅
+│
+├── app.json                    ✅ scheme: communegovernance, pkg: org.care.communegovernance
+└── eas.json                    ✅ preview: APK internal; production: AAB
 ```
 
-### 3.7 Collection: `audit_logs/{log_id}`
+### Auth Flow (Root Layout)
+
 ```
-log_id:     auto-generated
-user_id:    "USR001"
-xa_code:    "XALAOBAO"
-action:     "push_data"
-timestamp:  Timestamp
-detail:     { req_id: "REQ001", submission_id: "SUB001", ... }
-ip:         "..."          // Cloud Function có thể lấy từ request headers
+App start → hydrate() từ AsyncStorage/SecureStore
+         → isLoading=true → splash screen
+         → isLoading=false:
+           - isLoggedIn=false → /(auth)/login
+           - isLoggedIn=true  → /(cb-thon)/ | /(cb-cm)/ | /(lanh-dao)/
+```
+
+### Màn hình hoàn thiện ✅
+
+| Screen | Route | Status |
+|---|---|---|
+| Login | /(auth)/login | ✅ |
+| CB_THON Dashboard | /(cb-thon)/ | ✅ |
+| CB_THON Submit | /(cb-thon)/submit/[reqId] | ✅ |
+| CB_CM Dashboard | /(cb-cm)/ | ✅ |
+| CB_CM Verify | /(cb-cm)/verify/[subId] | ⚠️ Bug nhỏ |
+| LANH_DAO Dashboard | /(lanh-dao)/ | ⚠️ Cần rewrite |
+
+### Màn hình cần xây dựng (ưu tiên theo lớp)
+
+#### Lớp 1 — Nghiệp vụ còn thiếu
+| Screen | Route | FEAT | Priority |
+|---|---|---|---|
+| LANH_DAO Verify | /(lanh-dao)/verify/[subId] | FEAT-2 | 🔴 Cao |
+| CB_CM Tạo yêu cầu | /(cb-cm)/create-request | FEAT-1 | 🔴 Cao |
+| LANH_DAO Duyệt chỉ số | /(lanh-dao)/indicators | — | 🟡 Trung |
+| CB_CM Tạo chỉ số | /(cb-cm)/create-indicator | — | 🟡 Trung |
+
+#### Lớp 2 — Trình bày dữ liệu
+| Screen | Route | Priority |
+|---|---|---|
+| Báo cáo tabular | /reports/table | 🟡 Trung |
+| Biểu đồ thời gian | /reports/chart/[chiSoId] | 🟢 Sau |
+
+#### Lớp 4 — Profile
+| Screen | Route | FEAT | Priority |
+|---|---|---|---|
+| Profile / Settings | /profile | FEAT-3 | 🟡 Trung |
+| Đổi mật khẩu | /profile/change-password | — | 🟢 Sau |
+
+#### Lớp 5 — Admin
+| Screen | Route | FEAT | Priority |
+|---|---|---|---|
+| Tạo user | /admin/create-user | FEAT-4 | 🟢 Sau |
+| Quản lý users | /admin/users | — | 🟢 Sau |
+
+#### Lớp 3 — Tiện ích (để sau cùng)
+| Screen | Route | Priority |
+|---|---|---|
+| Báo cáo sự cố | /incidents/report | ⚪ Cuối |
+| Bản đồ sự cố | /incidents/map | ⚪ Cuối |
+
+---
+
+## 5. BUGS CÒN TỒN ĐỌNG
+
+### Backend
+
+| ID | File | Mô tả | Status |
+|---|---|---|---|
+| BUG-B3 | handlers/requests.js | Thiếu field `dinh_ky` (THANG/QUY/ADHOC) trong createRequest | ⬜ Chưa fix |
+| BUG-B4 | utils/manifest.js | LANH_DAO chưa nhận `pending_verifications[]` (zip hiện tại chưa có) | ⚠️ Cần verify |
+
+> **BUG-B3 rule**: Không tạo request định kỳ cho năm quá khứ. `dinh_ky` cần thêm vào createRequest validation + manifest response.
+
+### App
+
+| ID | File | Mô tả | Status |
+|---|---|---|---|
+| BUG-A3 | (cb-cm)/verify/[subId].jsx | `indicatorMap` dùng `ind.id` thay vì `ind.chi_so_id` → tên chỉ số hiện undefined | ⬜ Chưa fix |
+| BUG-A4 | (lanh-dao)/index.jsx | Cần rewrite: thêm section "Cần xử lý" với pending_verifications | ⬜ Cần làm |
+| BUG-A5 | (lanh-dao)/_layout.jsx | Cần thêm Stack.Screen `verify/[subId]` | ⬜ Cần làm |
+| BUG-A6 | (lanh-dao)/verify/[subId].jsx | File chưa tồn tại (FEAT-2) | ⬜ Cần tạo |
+
+> **BUG-A3 fix**: Line 45 trong `(cb-cm)/verify/[subId].jsx`:
+> ```js
+> // Sai:
+> (manifest?.indicators || []).forEach(ind => { map[ind.id] = ind; });
+> // Đúng:
+> (manifest?.indicators || []).forEach(ind => { map[ind.chi_so_id] = ind; });
+> ```
+
+---
+
+## 6. FEATURES ROADMAP
+
+### FEAT-1: CB_CM Tạo yêu cầu số liệu (App UI)
+- Backend `createRequest` đã có ✅
+- App cần: form chọn bộ chỉ số (filter theo linh_vuc của CB_CM), chọn định kỳ, chọn danh_sach_thon
+- Khi nhánh=UBND → gửi đến CB_THON thuộc UBND; nhánh=MTTQ → CB_THON thuộc MTTQ
+- Cần thêm `dinh_ky` vào backend trước (BUG-B3)
+
+### FEAT-2: LANH_DAO Verify trực tiếp (Bypass)
+- Backend: đã hỗ trợ — PERMISSION_MATRIX cho phép LANH_DAO verify_data ✅
+- Backend: `pending_verifications` cho LANH_DAO cần thêm vào manifest.js (BUG-B4)
+- App: cần tạo `(lanh-dao)/verify/[subId].jsx` — UI đơn giản hơn CB_CM (batch mode only: Xác nhận / Yêu cầu sửa)
+- App: rewrite `(lanh-dao)/index.jsx` — thêm SectionList với section "Cần xử lý"
+- Không có warning popup về bypass (chỉ log backend)
+
+### FEAT-3: Settings / Chọn năm báo cáo
+- Mặc định năm hiện tại từ `manifest.config.current_year`
+- Cho phép xem lại năm cũ (read-only, không tạo request mới)
+- LANH_DAO/ADMIN có thể config định kỳ mặc định cho xã
+- Nằm ở **Lớp 4 — Profile/Settings**
+
+### FEAT-4: Admin tạo user
+- Cần endpoint mới: `POST /create_user`
+- Body: `{ vai_tro, nhanh, don_vi, linh_vuc_codes, ho_ten, xa_code }`
+- Generate password tạm, user đổi lần đầu login
+- Nằm ở **Lớp 5 — Admin**
+
+### FEAT-5: Voice Transcription (Azure Speech) — để sau cùng
+- Architecture: Token endpoint
+  - `POST /speech_token` → Azure auth token (10 min)
+  - Client dùng Azure SDK trực tiếp (mic → text on device)
+- Env vars: `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION=southeastasia`
+- Files cần tạo: `handlers/transcribe.js`
+
+### FEAT-6: Lớp 2 — Báo cáo & Biểu đồ (Presentation)
+- Tabular: dữ liệu đã VERIFIED, lọc theo req_id / năm / thôn
+- Chart: trend theo thời gian cho chỉ số dạng số (kieu_du_lieu = "so")
+- Backend: có thể dùng `GET /dashboard` + query theo chi_so_id
+
+### FEAT-7: Lớp 3 — Tiện ích sự cố (Để sau cùng)
+- Báo cáo sự cố với geotag (GPS)
+- Cần endpoint mới: `POST /report_incident`
+- Cần Firestore collection mới: `communes/{xa_code}/incidents/{incident_id}`
+- Map rendering: có thể dùng MapView (cần native module → EAS build)
+
+---
+
+## 7. THỨ TỰ THỰC HIỆN (Recommended)
+
+```
+Giai đoạn 1 — Hoàn thiện nghiệp vụ core (Lớp 1)
+  1. Fix BUG-A3: CB_CM verify — ind.id → ind.chi_so_id
+  2. Fix BUG-B3 (backend): thêm dinh_ky vào createRequest
+  3. Fix BUG-B4 (backend): LANH_DAO pending_verifications trong manifest.js
+  4. FEAT-2 (app): tạo (lanh-dao)/verify/[subId].jsx + rewrite index.jsx + layout
+  5. FEAT-1 (app): CB_CM tạo yêu cầu — UI form
+  6. Build + test EAS APK → test với 3 test users
+
+Giai đoạn 2 — Lớp 4 Profile
+  7. FEAT-3: Profile/Settings + chọn năm báo cáo
+
+Giai đoạn 3 — Lớp 5 Admin
+  8. FEAT-4 backend: POST /create_user
+  9. FEAT-4 app: Admin screen tạo user
+
+Giai đoạn 4 — Lớp 2 Presentation
+  10. FEAT-6: màn hình báo cáo tabular
+  11. FEAT-6: biểu đồ time-series
+
+Giai đoạn 5 — Tính năng nâng cao (để sau)
+  12. FEAT-5: Voice Azure Speech
+  13. FEAT-7: Lớp 3 sự cố + geotag
 ```
 
 ---
 
-## 4. MANIFEST SCHEMA (trả về cho client)
+## 8. FIRESTORE SCHEMA (tóm tắt)
 
-Khi login hoặc pull_manifest, Cloud Function đọc
-`communes/{xa_code}/manifests/current` rồi FILTER server-side theo role:
+```
+users/{user_id}
+  user_id, xa_code, ho_ten, vai_tro, don_vi, nhanh,
+  linh_vuc_codes[], password_hash, password_salt,
+  session_token, token_expires_at, status, last_login_at
 
+communes/{xa_code}/indicators/{chi_so_id}
+  chi_so_id, ten_chi_so, mo_ta, don_vi_do, kieu_du_lieu,
+  linh_vuc, validation{}, status(DRAFT/PENDING/ACTIVE/ARCHIVED),
+  created_by, approved_by, year
+
+communes/{xa_code}/requests/{req_id}
+  req_id, tieu_de, tao_boi, danh_sach_thon[], chi_so_ids[],
+  deadline, dinh_ky(THANG/QUY/ADHOC), ghi_chu,
+  status(OPEN/IN_PROGRESS/COMPLETED/CANCELLED), year
+
+communes/{xa_code}/submissions/{submission_id}
+  submission_id, req_id, thon_code, submitted_by,
+  submitted_at, device_collected_at, values{},
+  anh_urls[], status, verified_by, verified_at,
+  indicator_reviews{}, rejection_reason, year
+
+communes/{xa_code}/manifests/current
+  Pre-computed, rebuilt on every indicator/request change
+
+xa_registry/{xa_code}
+  xa_code, xa_name, tinh, sheets_id, drive_folder_id, status
+
+audit_logs/{auto-id}
+  user_id, xa_code, action, timestamp, detail{}, ip
+```
+
+---
+
+## 9. MANIFEST RESPONSE STRUCTURE (confirmed từ API)
+
+### CB_THON
 ```json
 {
-  "manifest_version": "v20250615T103000",
-  "generated_at": "2025-06-15T10:30:00Z",
-  "expires_at": "2025-06-16T10:30:00Z",
-
-  "user": {
-    "user_id": "USR001",
-    "ho_ten": "Nguyễn Văn A",
-    "vai_tro": "CB_THON",
-    "don_vi": "THON01",
-    "xa_code": "XALAOBAO",
-    "xa_name": "Xã Lao Bảo"
-  },
-
-  "indicators": [
-    // CB_THON: tất cả indicators ACTIVE (cần để hiểu data form)
-    // CB_CM: chỉ indicators thuộc linh_vuc_codes của mình
-    // LANH_DAO/ADMIN: tất cả
-    {
-      "chi_so_id": "CS001",
-      "ten_chi_so": "Diện tích lúa",
-      "mo_ta": "Tổng diện tích canh tác lúa",
-      "don_vi_do": "ha",
-      "kieu_du_lieu": "so",
-      "validation": { "min": 0, "max": 10000, "required": true }
-    }
-  ],
-
+  "manifest_version": "v...",
+  "user": { "user_id", "ho_ten", "vai_tro", "don_vi", "nhanh", "xa_code", "xa_name" },
+  "indicators": [{ "chi_so_id", "ten_chi_so", "don_vi_do", "linh_vuc", "kieu_du_lieu" }],
   "requests": [
-    // CB_THON: CHỈ requests có thôn của mình trong danh_sach_thon
-    //          + kèm has_submitted để tránh nộp 2 lần
-    // CB_CM: requests do mình tạo hoặc thuộc lĩnh vực của mình
-    // LANH_DAO/ADMIN: tất cả
     {
-      "req_id": "REQ001",
-      "tieu_de": "Báo cáo nông nghiệp Q2",
-      "chi_so_ids": ["CS001", "CS002"],
-      "deadline": "2025-06-30",
-      "ghi_chu": "Tính đến ngày 30/6",
-      "has_submitted": false,
-      "submitted_at": null
+      "req_id", "tieu_de", "deadline",
+      "chi_so_ids": ["CS001"],      ← array ✅ (BUG-B1 fixed)
+      "danh_sach_thon": ["THON01"], ← array ✅
+      "has_submitted": true,
+      "tao_boi": "USR_LANHDAO"
     }
   ],
-
-  "config": {
-    "drive_folder_id": "abc123",
-    "current_year": 2025
-  }
+  "config": { "current_year": 2025, "drive_folder_id": null }
 }
 ```
 
----
-
-## 5. PHÂN QUYỀN
-
-4 roles: ADMIN | LANH_DAO | CB_CHUYEN_MON | CB_THON
-
-### Scoping rules
-- CB_THON: scoped theo `don_vi` (thôn code). Chỉ thấy/nộp data
-  của thôn mình.
-- CB_CHUYEN_MON: scoped theo `don_vi` (phòng ban) + `linh_vuc_codes`.
-  Chỉ tạo/verify indicators thuộc lĩnh vực của mình.
-- LANH_DAO / ADMIN: scope toàn xã.
-
-### Business rules cứng — KHÔNG có exception
-
-```
-R1: CHỈ LANH_DAO được approve indicator (PENDING → ACTIVE)
-R2: CHỈ CB_THON được push_data — CB_CM/LANH_DAO KHÔNG nhập thay
-R3: CB_CM chỉ create/verify indicators thuộc linh_vuc_codes của mình
-R4: CB_THON KHÔNG BAO GIỜ thấy data của thôn khác
-R5: push_data phải verify user.don_vi === request.danh_sach_thon
-    (chống forge thôn)
-R6: Manifest filter server-side — không tin client tự filter
-R7: Mỗi (req_id, thon_code) chỉ được submit 1 lần
-    (check trước khi ghi Firestore)
-```
-
-### Hàm bắt buộc
-
-```javascript
-// Throw ngay nếu fail — KHÔNG để logic chạy tiếp
-function checkPermission(user, action, scope) {
-  // action: "push_data" | "create_indicator" | "approve_indicator" | ...
-  // scope: { req_id, thon_code, linh_vuc, chi_so_id, ... }
-  const rules = PERMISSION_MATRIX[action];
-  if (!rules.allowedRoles.includes(user.vai_tro)) {
-    throw { code: "PERM_001", message: "Role không được phép" };
-  }
-  if (rules.scopeCheck) {
-    rules.scopeCheck(user, scope); // throw PERM_002 nếu sai scope
-  }
-}
-```
-
----
-
-## 6. CLOUD FUNCTIONS ENDPOINTS
-
-Base URL: `https://{region}-{project}.cloudfunctions.net/care-api`
-Tất cả endpoints nhận POST với Content-Type: application/json.
-GET chỉ dùng cho dashboard (có thể cache).
-
-```
-// Auth
-POST /login          // credentials → session_token + filtered manifest
-POST /logout         // invalidate token trong Firestore
-
-// Manifest
-POST /pull_manifest  // refresh manifest khi token còn hạn
-
-// Data (offline-first)
-POST /push_data      // CB_THON batch submit toàn bộ session
-
-// Management (online, CB_CM + LANH_DAO)
-POST /create_indicator   // CB_CM tạo → DRAFT, trigger rebuild manifest
-POST /approve_indicator  // LANH_DAO duyệt → ACTIVE, trigger rebuild manifest
-POST /create_request     // CB_CM/LANH_DAO tạo request, trigger rebuild manifest
-POST /verify_data        // CB_CM xác nhận submission → VERIFIED
-
-// Reporting
-GET  /dashboard          // tổng hợp theo xã/thôn/kỳ (LANH_DAO/ADMIN)
-
-// Internal (triggered by Cloud Scheduler, không expose ra ngoài)
-POST /sync_to_sheets     // Firestore → Google Sheets, chạy mỗi đêm lúc 2AM
-```
-
-### Trigger rebuild manifest
-Mỗi khi có thay đổi ảnh hưởng đến manifest (create/approve indicator,
-create request), Cloud Function phải gọi `rebuildManifest(xa_code, year)`
-để update document `communes/{xa_code}/manifests/current`.
-Client nhận manifest mới trong response ngay lập tức.
-
----
-
-## 7. REQUEST / RESPONSE FORMAT
-
-### Request format (tất cả endpoints trừ /login)
+### CB_CM
 ```json
 {
-  "token": "random32chars...",
-  "xa_code": "XALAOBAO",
-  "year": 2025,
-  "data": { }
-}
-```
-
-### push_data payload
-```json
-{
-  "token": "...",
-  "manifest_version_used": "v20250615T103000",
-  "submissions": [
+  "user": { "vai_tro": "CB_CHUYEN_MON", ... },
+  "requests": [...],  ← requests thuộc linh_vuc của mình
+  "pending_verifications": [
     {
-      "req_id": "REQ001",
-      "device_collected_at": "2025-06-15T09:00:00Z",
-      "values": {
-        "CS001": 120.5,
-        "CS002": 45,
-        "CS003": true
-      },
-      "anh_urls": [
-        "https://drive.google.com/file/d/abc/view"
-      ]
+      "submission_id", "req_id", "thon_code", "status",
+      "submitted_by", "submitted_at", "values": {},
+      "tieu_de", "deadline"
     }
   ]
 }
 ```
 
-### push_data response
+### LANH_DAO (sau khi fix BUG-B4)
 ```json
 {
-  "success": true,
-  "processed": 1,
-  "submission_ids": ["SUB001"],
-  "warnings": [],
-  "new_manifest": { }
-}
-```
-Note: `warnings` chứa "MANIFEST_OUTDATED" nếu manifest_version_used
-khác version hiện tại — vẫn accept data, chỉ flag để CB_CM biết khi verify.
-
-### Error response format
-```json
-{
-  "success": false,
-  "error_code": "PERM_002",
-  "message": "Không có quyền thực hiện thao tác này",
-  "timestamp": "2025-06-15T10:30:00Z"
-}
-```
-
-### Error codes chuẩn
-```
-AUTH_001: Token không hợp lệ hoặc hết hạn
-AUTH_002: Sai user_id hoặc password
-PERM_001: Role không được phép thực hiện action này
-PERM_002: User không có quyền trên scope này (sai thôn/lĩnh vực)
-DATA_001: Thiếu trường bắt buộc
-DATA_002: Request không tồn tại hoặc đã đóng
-DATA_003: CHI_SO không thuộc linh_vuc của user
-DATA_004: Submission trùng lặp (req_id + thon_code đã tồn tại)
-DATA_005: Indicator không ở trạng thái hợp lệ để approve
-SYNC_001: Manifest version mismatch (warning, không block)
-SYS_001:  Lỗi hệ thống — log và trả về message chung
-```
-
----
-
-## 8. SECURITY
-
-### Password
-- Algorithm: SHA-256 + per-user salt (salt lưu riêng trong Firestore)
-- KHÔNG dùng bcrypt (quá chậm cho Cloud Functions cold start)
-- Salt: 16 bytes random, hex encoded
-
-```javascript
-function hashPassword(plain, salt) {
-  const crypto = require("crypto");
-  return crypto.createHash("sha256")
-    .update(plain + salt)
-    .digest("hex");
-}
-
-function generateSalt() {
-  const crypto = require("crypto");
-  return crypto.randomBytes(16).toString("hex");
-}
-```
-
-### Session token
-- 32 bytes random, hex encoded (64 chars)
-- TTL: 30 ngày từ lần login
-- Lưu trong Firestore `users/{user_id}.session_token` +
-  `token_expires_at`
-- Invalidate: xóa token field (logout) hoặc check expires_at (auto)
-
-### Firestore Security Rules
-Cloud Functions chạy với Service Account có full Firestore access.
-Client KHÔNG trực tiếp đọc/ghi Firestore — tất cả qua Cloud Functions.
-Firestore rules: deny all từ client.
-
-```
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if false; // Cloud Functions dùng Admin SDK
-    }
-  }
-}
-```
-
-### Audit log
-Mọi write operation ghi vào `audit_logs`:
-```javascript
-async function logAudit(user, action, detail) {
-  await db.collection("audit_logs").add({
-    user_id: user.user_id,
-    xa_code: user.xa_code,
-    action,
-    timestamp: admin.firestore.FieldValue.serverTimestamp(),
-    detail
-  });
+  "user": { "vai_tro": "LANH_DAO", ... },
+  "requests": [...],  ← tất cả requests
+  "pending_verifications": [...]  ← TẤT CẢ submissions (không lọc linh_vuc)
 }
 ```
 
 ---
 
-## 9. OFFLINE-FIRST FLOW
+## 10. WORKFLOW DEPLOY
 
-### CB_THON flow (happy path)
-```
-1. Mở app, có mạng
-   → POST /login
-   → nhận { session_token, manifest }
-   → lưu vào AsyncStorage (React Native)
+```powershell
+# ── Backend ──────────────────────────────────────────────────
+cd F:\Developers\CARE\CommuneGovernance
+npx firebase use communegovernance --account ngocdd@thiennhienviet.org.vn
+npx firebase deploy --only functions
 
-2. Đóng mạng / vào vùng không có sóng
-   → app đọc manifest từ AsyncStorage
-   → user nhập số liệu cho từng request
-   → data lưu tạm trong AsyncStorage
+# ── App Build ─────────────────────────────────────────────────
+cd F:\Developers\CARE\CommuneGovernance\app
+$env:PATH += ";C:\Users\Administrator\AppData\Roaming\npm"
+eas build --platform android --profile preview
 
-3. Có mạng trở lại
-   → POST /push_data với toàn bộ submissions
-   → nhận { success, submission_ids, new_manifest }
-   → update manifest trong AsyncStorage
+# ── Test Login ────────────────────────────────────────────────
+Invoke-RestMethod `
+  -Uri "https://careapi-cx7avsd4pa-as.a.run.app/login" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"user_id":"USR_LANHDAO","password":"Test@1234"}' `
+  | ConvertTo-Json -Depth 5
 
-4. Token hết hạn (30 ngày)
-   → POST /login lại
-   → nhận manifest mới
-```
-
-### Conflict detection
-```
-push_data gửi: manifest_version_used = "v20250615T103000"
-Server check: current manifest version = "v20250620T080000"
-→ Khác nhau → vẫn ACCEPT data (data thực tế vẫn có giá trị)
-→ Thêm warning: "MANIFEST_OUTDATED"
-→ CB_CM sẽ thấy flag khi verify → tự quyết định có cần thu thập lại
+# ── Health Check ──────────────────────────────────────────────
+Invoke-RestMethod -Uri "https://careapi-cx7avsd4pa-as.a.run.app/health"
 ```
 
 ---
 
-## 10. IMAGE UPLOAD FLOW
-
-Apps Script và Cloud Functions KHÔNG nhận binary upload.
-Client upload ảnh trực tiếp lên Google Drive:
+## 11. PRINCIPLES & CONSTRAINTS (bất biến)
 
 ```
-1. manifest.config.drive_folder_id = "abc123"
-2. Client dùng Google Drive API (OAuth hoặc Service Account token)
-   để upload ảnh vào folder của xã
-3. Lấy file URL sau khi upload thành công
-4. Đưa URL vào push_data payload: anh_urls: ["https://..."]
-5. Cloud Function chỉ lưu URL — không xử lý file
-```
+OFFLINE-FIRST:  1 read (pull) + 1 write (push) mỗi session. Không call khác khi nhập liệu.
+ZERO VM:        Serverless hoàn toàn. Cloud Functions + Firestore + Cloud Run.
+SHEETS OUTPUT:  Google Sheets chỉ để CARE staff đọc — không phải database.
+SCALE:          4 → 500 xã chỉ thêm data, không đổi code/architecture.
 
-Note: Workspace for Nonprofits → unlimited Drive storage.
-Tổ chức theo path: `/{xa_code}/{year}/{req_id}/{thon_code}/`
-
----
-
-## 11. GOOGLE SHEETS SYNC (Reporting Only)
-
-Cloud Scheduler trigger mỗi đêm lúc 2AM → POST /sync_to_sheets
-
-### sync_to_sheets logic
-```javascript
-async function syncToSheets(xa_code, year) {
-  // 1. Đọc tất cả submissions từ Firestore (batch)
-  const submissions = await db
-    .collection(`communes/${xa_code}/submissions`)
-    .where("year", "==", year)
-    .get();
-
-  // 2. Mở Commune Sheet (ID từ config/xa_registry/{xa_code}.sheets_id)
-  const sheet = SpreadsheetApp / googleapis sheets API
-  
-  // 3. Clear và rewrite toàn bộ data tab
-  // Tab SUBMISSIONS: tất cả submissions theo req_id, thon_code
-  // Tab SUMMARY: tổng hợp theo thôn, theo chỉ số
-  // Tab INDICATORS: danh sách CHI_SO hiện tại
-  // Tab REQUESTS: danh sách requests hiện tại
-
-  // 4. Không bao giờ để Sheets là source of truth
-  //    Sheets có thể bị xóa/corrupt → chỉ cần chạy lại sync
-}
-```
-
-Commune Sheets structure (read-only cho CARE staff):
-```
-Tab SUBMISSIONS: submission_id | req_id | thon | submitted_by |
-                 submitted_at | CS001 | CS002 | ... | status
-Tab SUMMARY:     thon_code | req_id | tieu_de | trang_thai | % hoàn thành
-Tab INDICATORS:  chi_so_id | ten | don_vi | linh_vuc | status
-Tab REQUESTS:    req_id | tieu_de | deadline | status | % thon da nop
+R1: CHỈ LANH_DAO được approve indicator (PENDING → ACTIVE)
+R2: CHỈ CB_THON được push_data
+R3: CB_CM chỉ tạo/verify indicators thuộc linh_vuc_codes của mình
+R4: CB_THON KHÔNG BAO GIỜ thấy data thôn khác
+R5: push_data verify user.don_vi ∈ request.danh_sach_thon (anti-forge)
+R6: Manifest filter server-side — không tin client
+R7: (req_id, thon_code) chỉ submit 1 lần — check duplicate trước write
 ```
 
 ---
 
-## 12. PROJECT STRUCTURE (Cloud Functions)
-
-```
-care-data-collection/
-├── index.js              // Entry point, router
-├── package.json
-├── .env                  // GOOGLE_APPLICATION_CREDENTIALS, PROJECT_ID
-│
-├── handlers/
-│   ├── auth.js           // login, logout, pull_manifest
-│   ├── data.js           // push_data
-│   ├── indicators.js     // create_indicator, approve_indicator
-│   ├── requests.js       // create_request
-│   ├── verify.js         // verify_data
-│   ├── dashboard.js      // get_dashboard
-│   └── sync.js           // sync_to_sheets (internal)
-│
-├── middleware/
-│   ├── validateToken.js  // check session_token trong Firestore
-│   ├── checkPermission.js// enforce RBAC — gọi trước mọi handler
-│   └── logAudit.js       // ghi audit_logs
-│
-├── utils/
-│   ├── firestore.js      // db instance, batch helpers
-│   ├── crypto.js         // hashPassword, generateToken, generateSalt
-│   ├── manifest.js       // buildManifest, rebuildManifest, filterManifest
-│   ├── response.js       // successResponse, errorResponse
-│   └── constants.js      // ROLES, ACTIONS, ERROR_CODES
-│
-└── firestore.rules       // deny all từ client
-```
-
----
-
-## 13. YÊU CẦU OUTPUT (Implement theo thứ tự)
-
-### Bước 1 — Foundation (implement trước)
-Viết đầy đủ code cho:
-
-1. `index.js` — router, parse request, dispatch đến handler
-2. `middleware/validateToken.js` — đọc Firestore users, check expiry
-3. `middleware/checkPermission.js` — PERMISSION_MATRIX đầy đủ 9 actions,
-   throw error ngay nếu fail, được gọi TRƯỚC mọi business logic
-4. `utils/crypto.js` — hashPassword(plain, salt), generateToken(),
-   generateSalt()
-5. `utils/response.js` — successResponse(data), errorResponse(code, msg)
-6. `utils/constants.js` — ROLES, ACTIONS, ERROR_CODES, PERMISSION_MATRIX
-7. `handlers/auth.js`:
-   - `login(req)`: verify password → tạo token → buildManifest → return
-   - `logout(req)`: clear token trong Firestore
-   - `pullManifest(req)`: refresh manifest cho token còn hạn
-8. `utils/manifest.js`:
-   - `buildManifest(xa_code, year, user)`: đọc Firestore, filter theo role,
-     return manifest JSON
-   - `rebuildManifest(xa_code, year)`: update document manifests/current
-   - `filterManifestForUser(manifest, user)`: filter requests theo thôn/lĩnh vực
-
-### Bước 2 — Core data flow
-9. `handlers/data.js` — `pushData(req)`:
-   - checkPermission trước
-   - Validate payload
-   - Check duplicate (req_id + thon_code + year)
-   - Check manifest version → add warning nếu stale
-   - Batch write submissions vào Firestore
-   - logAudit
-   - Return { success, submission_ids, warnings, new_manifest }
-
-### Bước 3 — Management
-10. `handlers/indicators.js` — create + approve
-11. `handlers/requests.js` — create + trigger rebuildManifest
-12. `handlers/verify.js` — verify submission
-13. `handlers/dashboard.js` — aggregate từ Firestore
-
-### Bước 4 — Reporting sync
-14. `handlers/sync.js` — sync_to_sheets dùng Google Sheets API v4
-
----
-
-## 14. CONSTRAINTS BẮT BUỘC
-
-```
-- Tất cả Firestore reads dùng batch (collection.get() hoặc
-  collection.where().get()) — KHÔNG dùng doc().get() trong loop
-- checkPermission() phải được gọi TRƯỚC mọi business logic,
-  không exception
-- push_data PHẢI check duplicate trước khi ghi
-- Mọi write operation PHẢI gọi logAudit()
-- rebuildManifest() phải được gọi sau mỗi thay đổi indicator/request
-- Comment bằng tiếng Anh trong code
-- Tất cả error phải return đúng format errorResponse()
-  — không bao giờ để unhandled exception expose ra client
-- Dùng async/await, không dùng callback
-- Validate input ở đầu mỗi handler trước khi chạm Firestore
-```
-
----
-
-## 15. ENVIRONMENT VARIABLES
-
-```bash
-PROJECT_ID=care-data-collection
-FIRESTORE_DATABASE=(default)
-REGION=asia-southeast1        # Singapore, gần Việt Nam nhất
-GOOGLE_APPLICATION_CREDENTIALS=./service-account.json
-
-# Sheets sync
-SHEETS_API_SCOPES=https://www.googleapis.com/auth/spreadsheets
-
-# Security
-TOKEN_TTL_DAYS=30
-MANIFEST_TTL_HOURS=24
-```
-
----
-
-*Prompt version 2.0 — Offline-First, Google Cloud Functions + Firestore*
-*Designed for CARE Vietnam — Rural Data Collection System*
-*Scales from 4 to 500+ communes without architecture change*
+*Context V3 — CommuneGovernance CARE Vietnam*
+*Updated: 27/05/2026*
+*By: Claude Sonnet (working with @paulsteigel)*

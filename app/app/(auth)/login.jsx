@@ -1,12 +1,14 @@
 // app/(auth)/login.jsx
 // Màn hình đăng nhập — thiết kế tối giản cho cán bộ vùng DTTS.
 // Font lớn, ít bước, nhãn rõ ràng.
+// FIX BUG-A1: Bỏ xa_code + year khỏi form — lấy từ manifest sau login.
+// FIX BUG-A2: Lưu ho_ten thay vì ten.
 
 import React, { useState } from "react";
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, KeyboardAvoidingView,
-  Platform, Alert,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -19,45 +21,50 @@ import LoadingOverlay from "../../components/LoadingOverlay";
 export default function LoginScreen() {
   const setAuth = useAuthStore(s => s.setAuth);
 
-  const [userId,    setUserId]    = useState("");
-  const [password,  setPassword]  = useState("");
-  const [xaCode,    setXaCode]    = useState("");
-  const [year,      setYear]      = useState(String(CURRENT_YEAR));
-  const [showPass,  setShowPass]  = useState(false);
-  const [loading,   setLoading]   = useState(false);
-  const [error,     setError]     = useState("");
+  const [userId,   setUserId]   = useState("");
+  const [password, setPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState("");
 
   async function handleLogin() {
     setError("");
-    if (!userId.trim() || !password || !xaCode.trim()) {
+    if (!userId.trim() || !password) {
       setError("Vui lòng điền đầy đủ thông tin");
       return;
     }
 
     setLoading(true);
     try {
+      // FIX BUG-A1: chỉ gửi user_id + password, không cần xa_code / year
       const data = await login({
         user_id:  userId.trim().toUpperCase(),
         password,
-        xa_code:  xaCode.trim().toUpperCase(),
-        year:     Number(year) || CURRENT_YEAR,
       });
 
-      // Extract user from manifest
+      // FIX BUG-A1: lấy xa_code và year từ manifest trả về
+      const manifestUser   = data.manifest?.user   || {};
+      const manifestConfig = data.manifest?.config  || {};
+
+      const xa_code = manifestUser.xa_code  || "";
+      const year    = manifestConfig.current_year || CURRENT_YEAR;
+
+      // FIX BUG-A2: lưu ho_ten (không phải ten)
       const user = {
-        user_id:       userId.trim().toUpperCase(),
-        vai_tro:       data.manifest?.user?.vai_tro,
-        ten:           data.manifest?.user?.ten,
-        don_vi:        data.manifest?.user?.don_vi,
-        nhanh:         data.manifest?.user?.nhanh,
-        linh_vuc_codes: data.manifest?.user?.linh_vuc_codes,
+        user_id:        manifestUser.user_id        || userId.trim().toUpperCase(),
+        ho_ten:         manifestUser.ho_ten,
+        vai_tro:        manifestUser.vai_tro,
+        don_vi:         manifestUser.don_vi,
+        nhanh:          manifestUser.nhanh,
+        xa_code:        manifestUser.xa_code,
+        linh_vuc_codes: manifestUser.linh_vuc_codes || [],
       };
 
       await setAuth({
         token:    data.token,
         user,
-        xa_code:  xaCode.trim().toUpperCase(),
-        year:     Number(year) || CURRENT_YEAR,
+        xa_code,
+        year,
         manifest: data.manifest,
       });
 
@@ -129,7 +136,8 @@ export default function LoginScreen() {
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPass}
-                  returnKeyType="next"
+                  returnKeyType="done"
+                  onSubmitEditing={handleLogin}
                   placeholderTextColor={COLORS.textHint}
                 />
                 <TouchableOpacity
@@ -143,42 +151,6 @@ export default function LoginScreen() {
                     color={COLORS.textSecondary}
                   />
                 </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Xa code */}
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Mã xã</Text>
-              <View style={styles.inputWrap}>
-                <Ionicons name="location-outline" size={22} color={COLORS.textSecondary} style={styles.inputIcon} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ví dụ: XATEST"
-                  value={xaCode}
-                  onChangeText={setXaCode}
-                  autoCapitalize="characters"
-                  autoCorrect={false}
-                  returnKeyType="next"
-                  placeholderTextColor={COLORS.textHint}
-                />
-              </View>
-            </View>
-
-            {/* Year */}
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Năm</Text>
-              <View style={styles.inputWrap}>
-                <Ionicons name="calendar-outline" size={22} color={COLORS.textSecondary} style={styles.inputIcon} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="2025"
-                  value={year}
-                  onChangeText={setYear}
-                  keyboardType="numeric"
-                  returnKeyType="done"
-                  onSubmitEditing={handleLogin}
-                  placeholderTextColor={COLORS.textHint}
-                />
               </View>
             </View>
 
@@ -206,13 +178,13 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   },
   scroll: {
-    flexGrow:        1,
+    flexGrow:          1,
     paddingHorizontal: SPACING.lg,
-    paddingBottom:   SPACING.xl,
+    paddingBottom:     SPACING.xl,
   },
   header: {
-    alignItems:  "center",
-    paddingTop:  SPACING.xxl,
+    alignItems:    "center",
+    paddingTop:    SPACING.xxl,
     paddingBottom: SPACING.xl,
   },
   logoCircle: {
@@ -266,13 +238,13 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
   },
   inputWrap: {
-    flexDirection:   "row",
-    alignItems:      "center",
-    borderWidth:     1.5,
-    borderColor:     COLORS.border,
-    borderRadius:    RADIUS.md,
-    backgroundColor: COLORS.background,
-    minHeight:       TOUCH_TARGET,
+    flexDirection:     "row",
+    alignItems:        "center",
+    borderWidth:       1.5,
+    borderColor:       COLORS.border,
+    borderRadius:      RADIUS.md,
+    backgroundColor:   COLORS.background,
+    minHeight:         TOUCH_TARGET,
     paddingHorizontal: SPACING.md,
   },
   inputIcon: {
