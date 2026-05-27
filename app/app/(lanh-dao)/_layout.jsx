@@ -10,6 +10,12 @@ export default function LanhDaoLayout() {
         headerTintColor:  COLORS.white,
         headerTitleStyle: { fontSize: 18, fontWeight: "700" },
       }}
-    />
+    >
+      <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="verify/[subId]"
+        options={{ title: "Xét duyệt số liệu", headerBackTitle: "Quay lại" }}
+      />
+    </Stack>
   );
 }

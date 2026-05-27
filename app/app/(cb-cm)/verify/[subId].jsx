@@ -42,7 +42,7 @@ export default function VerifyScreen() {
   // Indicator map
   const indicatorMap = useMemo(() => {
     const map = {};
-    (manifest?.indicators || []).forEach(ind => { map[ind.id] = ind; });
+    (manifest?.indicators || []).forEach(ind => { map[ind.chi_so_id] = ind; });
     return map;
   }, [manifest]);
 
