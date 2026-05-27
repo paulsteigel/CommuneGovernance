@@ -1,5 +1,5 @@
 # CommuneGovernance — CARE Vietnam
-## Full Context Document — V3 (27/05/2026)
+## Full Context Document — V3.1 (27/05/2026)
 
 ---
 
@@ -12,11 +12,42 @@
 | Backend Local | `F:\Developers\CARE\CommuneGovernance\` |
 | App Local | `F:\Developers\CARE\CommuneGovernance\app\` |
 | Backend Runtime | Node 24, Firebase Functions v2, Cloud Run `asia-southeast1` |
-| App Stack | Expo SDK **52** (package.json), EAS Build, project `@paulsteigel/commune-governance` |
-| App Build | EAS cloud build — `eas build --platform android --profile preview` (APK) |
-| Note | Expo Go không dùng được vì có native module `@react-native-community/netinfo` |
+| App Stack | Expo SDK **52** (confirmed từ package.json `"expo": "~52.0.0"`) |
+| EAS Project | `@paulsteigel/commune-governance` |
 
-> ⚠️ **Discrepancy**: Context cũ ghi "Expo SDK 56" nhưng `package.json` thực tế là `"expo": "~52.0.0"`. Cần xác nhận lại version đang dùng khi build.
+> ⚠️ Context cũ ghi "Expo SDK 56" là sai — thực tế là SDK 52.
+
+### Build Commands
+
+```powershell
+# ── LOCAL DEBUG BUILD (nhanh, dùng khi dev) ─────────────────
+# Chạy từ thư mục android/
+cd F:\Developers\CARE\CommuneGovernance\app\android
+.\gradlew.bat assembleDebug
+# APK output: app\android\app\build\outputs\apk\debug\app-debug.apk
+
+# ── EAS CLOUD BUILD (preview APK, dùng trước release) ────────
+cd F:\Developers\CARE\CommuneGovernance\app
+$env:PATH += ";C:\Users\Administrator\AppData\Roaming\npm"
+eas build --platform android --profile preview
+
+# ── BACKEND DEPLOY ────────────────────────────────────────────
+cd F:\Developers\CARE\CommuneGovernance
+npx firebase use communegovernance --account ngocdd@thiennhienviet.org.vn
+npx firebase deploy --only functions
+
+# ── TEST LOGIN (PowerShell) ───────────────────────────────────
+Invoke-RestMethod `
+  -Uri "https://careapi-cx7avsd4pa-as.a.run.app/login" `
+  -Method POST -ContentType "application/json" `
+  -Body '{"user_id":"USR_LANHDAO","password":"Test@1234"}' `
+  | ConvertTo-Json -Depth 5
+```
+
+**Khi nào dùng cái nào:**
+- `.\gradlew.bat assembleDebug` → iteration nhanh khi dev, không cần queue cloud
+- `eas build --profile preview` → trước khi gửi tester, APK không có dev overhead
+- `eas build --profile production` → phát hành chính thức (AAB)
 
 ### Test Users (xa: XATEST, password: Test@1234)
 
@@ -35,396 +66,378 @@
 
 ---
 
-## 2. KIẾN TRÚC PHÂN LỚP APP (V3 — Mới)
+## 2. ĐÁNH GIÁ KIẾN TRÚC TỔNG THỂ
 
-App được tổ chức thành **5 lớp chức năng** thay vì flat theo role:
+### 2.1 Những gì đang làm đúng ✅
+
+**Offline-first manifest pattern** là lựa chọn xuất sắc cho bối cảnh nông thôn Việt Nam. Toàn bộ data cần cho một session được pull 1 lần khi có mạng, lưu vào store, sau đó user nhập liệu hoàn toàn offline. Đây là điểm mạnh nhất của kiến trúc.
+
+**Pre-computed manifest document** (`communes/{xa}/manifests/current`) tiết kiệm 2-3 Firestore reads mỗi lần login. Thay vì đọc 3 collections (indicators + requests + submissions), chỉ đọc 1 document đã assembled sẵn. Rất thông minh về quota.
+
+**Server-side role filtering** đúng chỗ — không bao giờ tin client tự filter. CB_THON chỉ nhận requests của thôn mình, không bao giờ thấy data thôn khác.
+
+**Serverless hoàn toàn** (Cloud Run + Firestore) — zero ops, zero VM maintenance, scale tự động.
+
+**Zustand** là đúng lựa chọn: nhẹ hơn Redux 10x, đủ dùng cho app 1 user/device.
+
+### 2.2 Vấn đề cần cải thiện
+
+**BUG CRASH quan trọng** — xem mục 4 chi tiết. Nguyên nhân: Firestore Timestamp objects không được convert sang ISO string trước khi trả về JSON.
+
+**Navigation architecture** — Kiến trúc routing hiện tại (flat group theo role) phù hợp cho giai đoạn 1 nhưng cần evolve khi xây Lớp 2-5:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  LỚP 1 — NGHIỆP VỤ (Business)                              │
-│  Phân theo chức năng của từng role                          │
-├─────────────────────────────────────────────────────────────┤
-│  LỚP 2 — TRÌNH BÀY DỮ LIỆU (Presentation)                  │
-│  Báo cáo tabular + biểu đồ theo lịch sử công bố            │
-├─────────────────────────────────────────────────────────────┤
-│  LỚP 3 — TIỆN ÍCH BỔ SUNG (Utilities) — Làm sau            │
-│  Báo cáo tình huống: thiên tai, sạt lở, dịch bệnh + geotag │
-├─────────────────────────────────────────────────────────────┤
-│  LỚP 4 — HỒ SƠ NGƯỜI DÙNG (Profile)                        │
-│  Thông tin user, đổi mật khẩu, cài đặt năm báo cáo         │
-├─────────────────────────────────────────────────────────────┤
-│  LỚP 5 — QUẢN TRỊ (Admin)                                   │
-│  Chỉ ADMIN + LANH_DAO: tạo user, quản lý bộ chỉ số         │
-└─────────────────────────────────────────────────────────────┘
+Hiện tại (flat Stack):         Cần chuyển sang (Tab + Stack):
+/(auth)/                       /(auth)/
+/(cb-thon)/                    /(app)/(tabs)/
+/(cb-cm)/              →         business/  ← role-specific screens
+/(lanh-dao)/                     reports/   ← Lớp 2
+                                 profile/   ← Lớp 4
+                                 admin/     ← Lớp 5 (conditional)
 ```
 
-### Lớp 1 — Nghiệp vụ theo Role
+**Refactor này nên làm TRƯỚC khi xây Lớp 2-5** để tránh đập đi làm lại navigation.
 
-**LANH_DAO:**
-- ✅ Dashboard tiến độ nộp số liệu theo yêu cầu
-- ✅ Xác minh/xác nhận dữ liệu thôn gửi lên (**bypass** CB_CM nếu CB_CM không làm)
-- ⬜ Nhắc nhở CB_CM xác minh / thôn thu thập thông tin (push notification hoặc in-app)
-- ✅ Review & duyệt bộ chỉ số do CB_CM trình (PENDING → ACTIVE) — nhằm tránh trùng lặp, pháp lý hóa cơ sở
+**State management** — `authStore` hiện đang chứa cả auth (token, user) lẫn data (manifest, xa_code, year). Khi features nhiều hơn nên tách ra `authStore` + `appStore` (manifest, settings).
 
-**CB_CHUYEN_MON:**
-- ✅ Xem + xét duyệt submissions (per_indicator hoặc batch mode)
-- ⬜ Tạo yêu cầu cung cấp thông tin (FEAT-1) — chọn bộ chỉ số theo ngành, chọn định kỳ, gửi đúng nhánh CB_THON
-- ✅ Tạo bộ chỉ số mới → trình LANH_DAO phê duyệt
-- ⚠️ Kiểm tra trùng chỉ số khi tạo (tránh 2 ngành thu thập cùng 1 chỉ số)
+### 2.3 Kiến trúc 5 lớp — Đánh giá
 
-**CB_THON:**
-- ✅ Xem danh sách yêu cầu của thôn mình
-- ✅ Thu thập và nộp số liệu (offline-first)
-- ✅ Sửa và nộp lại khi bị NEEDS_REVISION (`resubmit_data`)
+Mô hình 5 lớp cụ đề xuất là **đúng về mặt UX** và phản ánh đúng mental model của người dùng. Tuy nhiên cần làm rõ một điều quan trọng:
 
-### Lớp 2 — Trình bày dữ liệu
+> **5 lớp là cách tổ chức UX/navigation, KHÔNG phải cách tổ chức code backend.** Backend vẫn giữ nguyên structure handler-based hiện tại. Thay đổi chỉ ở phía app navigation.
 
-- **Tabular**: hiển thị số liệu đã được duyệt & công bố (VERIFIED), lọc theo lịch sử công bố để theo dõi tiến trình
-- Hiển thị theo cấp: CB_THON thấy thôn mình, CB_CM/LANH_DAO thấy toàn xã
-- **Advanced**: biểu đồ / chart cho các chỉ số định lượng (số) để thấy biến động theo thời gian
-- ⬜ **Chưa xây dựng** — cần thiết kế screen mới
+Mapping cụ thể từ lớp → Expo Router:
 
-### Lớp 3 — Tiện ích bổ sung *(Để sau)*
-
-- Báo cáo tình huống khẩn: thiên tai, điểm sạt lở, dịch bệnh, sự cố
-- Gắn **geotag** (GPS coordinates) để thể hiện trên bản đồ
-- ⬜ **Chưa xây dựng** — cần backend endpoint + app screen mới
-
-### Lớp 4 — Hồ sơ người dùng
-
-- Thông tin cá nhân (ho_ten, vai_tro, xa_code, don_vi, nhanh)
-- Đổi mật khẩu
-- Cài đặt năm báo cáo (mặc định năm hiện tại; xem lại năm cũ read-only)
-- ⬜ **Chưa xây dựng** — liên quan FEAT-3
-
-### Lớp 5 — Quản trị *(ADMIN + LANH_DAO)*
-
-- Tạo / quản lý user (FEAT-4): set vai_tro, nhanh, don_vi, linh_vuc_codes; generate password tạm
-- Xem audit log
-- Config định kỳ mặc định cho xã
-- ⬜ **Chưa xây dựng** — cần backend POST /create_user trước
+| Lớp | Tên | Tab Icon | Roles thấy | Route prefix |
+|---|---|---|---|---|
+| 1 | Nghiệp vụ | briefcase | Tất cả (content khác nhau) | /business/ |
+| 2 | Báo cáo | bar-chart | Tất cả (scope khác nhau) | /reports/ |
+| 3 | Tiện ích | map | Tất cả | /incidents/ |
+| 4 | Hồ sơ | person | Tất cả | /profile/ |
+| 5 | Quản trị | settings | ADMIN + LANH_DAO | /admin/ |
 
 ---
 
-## 3. BACKEND — TRẠNG THÁI HIỆN TẠI
+## 3. BACKEND — TRẠNG THÁI
 
 ### Deployment
-- **Deployed**: Cloud Run `asia-southeast1` ✅
-- URL: `https://careapi-cx7avsd4pa-as.a.run.app`
+- **Deployed & Live** ✅ — https://careapi-cx7avsd4pa-as.a.run.app
 
-### Endpoints đã có
+### Endpoints hiện có
 
-| Endpoint | Handler | Status |
-|---|---|---|
-| POST /login | auth.login | ✅ Deployed |
-| POST /logout | auth.logout | ✅ Deployed |
-| POST /pull_manifest | auth.pullManifest | ✅ Deployed |
-| POST /push_data | data.pushData | ✅ Deployed |
-| POST /resubmit_data | verify.resubmitData | ✅ Deployed |
-| POST /create_indicator | indicators.createIndicator | ✅ Deployed |
-| POST /approve_indicator | indicators.approveIndicator | ✅ Deployed |
-| POST /create_request | requests.createRequest | ✅ Deployed |
-| POST /verify_data | verify.verifyData | ✅ Deployed |
-| GET /dashboard | dashboard.getDashboard | ✅ Deployed |
-| POST /sync_to_sheets | sync.syncToSheets | ✅ Deployed |
-| GET /health | — | ✅ Deployed |
+| Endpoint | Handler | Tests | Status |
+|---|---|---|---|
+| POST /login | auth.login | ✅ | Live |
+| POST /logout | auth.logout | ✅ | Live |
+| POST /pull_manifest | auth.pullManifest | ✅ | Live |
+| POST /push_data | data.pushData | 19/19 ✅ | Live |
+| POST /resubmit_data | verify.resubmitData | ✅ | Live |
+| POST /create_indicator | indicators.createIndicator | 23/23 ✅ | Live |
+| POST /approve_indicator | indicators.approveIndicator | 23/23 ✅ | Live |
+| POST /create_request | requests.createRequest | 25/25 ✅ | Live |
+| POST /verify_data | verify.verifyData | 34/34 ✅ | Live |
+| GET /dashboard | dashboard.getDashboard | ✅ | Live |
+| POST /sync_to_sheets | sync.syncToSheets | 15/15 ✅ | Live |
+| GET /health | inline | — | Live |
 
-### Endpoint cần thêm
+### Endpoints cần thêm
 
-| Endpoint | Handler | Status |
-|---|---|---|
-| POST /create_user | handlers/users.js (mới) | ⬜ FEAT-4 |
-| POST /speech_token | handlers/transcribe.js | ⬜ FEAT-5 (sau cùng) |
-| POST /report_incident | handlers/incidents.js | ⬜ Lớp 3 — sau cùng |
+| Endpoint | Handler | FEAT | Priority |
+|---|---|---|---|
+| POST /create_user | handlers/users.js (mới) | FEAT-4 | 🟡 |
+| POST /speech_token | handlers/transcribe.js | FEAT-5 | 🟢 |
+| POST /report_incident | handlers/incidents.js | Lớp 3 | 🟢 |
 
 ### Project Structure (Backend)
 
 ```
 F:\Developers\CARE\CommuneGovernance\
-├── index.js                    ✅ Router Express + Cloud Function export
-├── package.json                ✅ Node 24, express, firebase-admin, googleapis
-├── firebase.json               ✅
-├── firestore.rules             ✅ deny all from client
-│
+├── index.js                    ✅
 ├── handlers/
-│   ├── auth.js                 ✅ login (BUG-A1 fixed), logout, pullManifest
-│   ├── data.js                 ✅ pushData (19 tests pass)
-│   ├── indicators.js           ✅ createIndicator, approveIndicator (23 tests pass)
-│   ├── requests.js             ✅ createRequest (25 tests pass)
-│   ├── verify.js               ✅ verifyData (batch+per_indicator), resubmitData (34 tests pass)
+│   ├── auth.js                 ✅ login/logout/pullManifest
+│   ├── data.js                 ✅ pushData
+│   ├── indicators.js           ✅ createIndicator, approveIndicator
+│   ├── requests.js             ✅ createRequest
+│   ├── verify.js               ✅ verifyData (batch+per_indicator), resubmitData
 │   ├── dashboard.js            ✅ getDashboard
-│   └── sync.js                 ✅ syncToSheets (15 tests pass)
-│
+│   └── sync.js                 ✅ syncToSheets
 ├── middleware/
 │   ├── validateToken.js        ✅
-│   ├── checkPermission.js      ✅ PERMISSION_MATRIX đầy đủ
+│   ├── checkPermission.js      ✅
 │   └── logAudit.js             ✅
-│
-├── utils/
-│   ├── firestore.js            ✅ db, paths, queryAll, serverTimestamp
-│   ├── crypto.js               ✅ hashPassword, generateToken, generateSalt
-│   ├── manifest.js             ✅ buildManifest, rebuildManifest, filterManifestForUser
-│   ├── response.js             ✅ successResponse, errorResponse, asyncHandler
-│   └── constants.js            ✅ ROLES, NHANH, ACTIONS, SUBMISSION_STATUS, ERROR_CODES, PERMISSION_MATRIX
-│
-└── tests/
-    ├── seed_test_data.js
-    ├── test_dashboard.js
-    ├── test_indicators.js
-    ├── test_push_data.js
-    ├── test_requests.js
-    ├── test_sync.js
-    └── test_verify.js
+└── utils/
+    ├── firestore.js            ✅
+    ├── crypto.js               ✅
+    ├── manifest.js             ⚠️ BUG-B5: Timestamp không convert sang ISO string
+    ├── response.js             ✅
+    └── constants.js            ✅ ROLES, NHANH, SUBMISSION_STATUS, ERROR_CODES, PERMISSION_MATRIX
 ```
-
-### Manifest Logic (utils/manifest.js) — Key Details
-
-**buildManifest()** — filter theo role:
-- CB_THON: requests của thôn mình + `has_submitted` flag. Read: manifest + submissions (2 reads)
-- CB_CM: requests thuộc linh_vuc của mình + `pending_verifications[]` (submissions chờ duyệt). Read: manifest + submissions (2 reads)
-- LANH_DAO/ADMIN: tất cả requests. Read: manifest (1 read)
-
-> ⚠️ **Cần kiểm tra**: File `manifest.js` trong zip hiện tại chỉ có `pending_verifications` cho `CB_CHUYEN_MON`. Context3.md nói đã thêm cho `LANH_DAO` nhưng code trong zip chưa phản ánh. Cần verify file thực tế trên server (có thể deploy đã include bản mới hơn zip).
-
-**rebuildManifest()** — BUG-B1 đã fix:
-- Normalize `chi_so_ids` và `danh_sach_thon` từ string thành array qua `_toArray()`
-- Được gọi sau mỗi create/approve indicator, create request
 
 ### Submission Status Flow
 
 ```
-PENDING_VERIFY → IN_REVIEW (CB_CM đang xem, save progress)
-              → VERIFIED   (confirmed all)
-              → NEEDS_REVISION (CB_THON phải sửa lại)
+PENDING_VERIFY → IN_REVIEW     (CB_CM/LANH_DAO đang xem, save progress)
+              → VERIFIED        (confirmed all)
+              → NEEDS_REVISION  (CB_THON phải sửa lại)
 NEEDS_REVISION → PENDING_VERIFY (sau khi CB_THON resubmit)
 ```
 
-### Roles & NHANH
+---
 
-```
-ROLES:  ADMIN | LANH_DAO | CB_CHUYEN_MON | CB_THON
-NHANH:  UBND  | MTTQ     | DANG
+## 4. BUGS — ĐẦY ĐỦ VÀ PHÂN TÍCH
+
+### 🔴 BUG-B5 (CRASH) — Firestore Timestamp không được convert sang ISO string
+
+**File**: `utils/manifest.js`, line ~200  
+**Mô tả**: `queryAll()` trả về Firestore documents với các Timestamp fields nguyên dạng (`admin.firestore.Timestamp` object). Khi đi qua `JSON.stringify` (trong `res.json()`), chúng serialize thành `{ "_seconds": N, "_nanoseconds": N }` — không phải ISO string.
+
+**Tại sao crash**: Trong `(cb-cm)/index.jsx` line 84:
+```js
+// item.submitted_at = { _seconds: 1748390400, _nanoseconds: 0 }
+item.submitted_at?.slice(0, 10)   // ❌ CRASH: .slice is not a function
+// Ghi chú: ?. chỉ guard null/undefined, không guard wrong type
+// Object {} là truthy nên ?. không short-circuit → gọi .slice trên object → crash
 ```
 
-LANH_DAO/CB_CM chỉ tạo request/indicator cho nhánh của mình (scope check theo nhanh).
+**Proof**:
+```js
+const ts = { _seconds: 1748390400, _nanoseconds: 0 };
+ts?.slice(0, 10)   // → TypeError: ts?.slice is not a function ✓ confirmed
+ts?.slice?.(0, 10) // → undefined (safe, nếu dùng form này)
+```
+
+**Ảnh hưởng**:
+- CB_CM login → manifest có `pending_verifications[]` với `submitted_at` là Timestamp object
+- `(cb-cm)/index.jsx` render FlatList → gọi `.slice(0, 10)` → crash ngay khi login
+- CB_THON và LANH_DAO không crash vì screens của họ không access `submitted_at` theo cách này
+
+**Fix backend** (đúng chỗ — `utils/manifest.js`):
+```js
+// Thêm helper ở cuối file:
+function _toIso(ts) {
+  if (!ts) return null;
+  if (typeof ts === "string") return ts;
+  if (ts._seconds !== undefined) return new Date(ts._seconds * 1000).toISOString();
+  if (ts.toDate) return ts.toDate().toISOString();
+  return null;
+}
+
+// Trong pending_verifications map:
+return {
+  submission_id: s.submission_id || s.id,
+  req_id:        s.req_id,
+  thon_code:     s.thon_code,
+  status:        s.status,
+  submitted_by:  s.submitted_by,
+  submitted_at:  _toIso(s.submitted_at),   // ← FIX: convert to ISO string
+  values:        s.values || {},
+  tieu_de:       req?.tieu_de || s.req_id,
+  deadline:      req?.deadline || null,
+};
+```
+
+**Fix frontend** (safety net — thêm vào `constants/theme.js` hoặc `utils/dateHelper.js`):
+```js
+// App-side safety: handle cả string lẫn Timestamp object
+export function toDateStr(val) {
+  if (!val) return null;
+  if (typeof val === "string") return val.slice(0, 10);
+  if (val._seconds !== undefined)
+    return new Date(val._seconds * 1000).toISOString().slice(0, 10);
+  return null;
+}
+// Dùng: {toDateStr(item.submitted_at) || "—"}
+```
+
+> **Lưu ý**: Cần apply `_toIso()` cho TẤT CẢ Timestamp fields bất kỳ nơi nào trả về cho client: `submitted_at`, `verified_at`, `created_at`, `deadline` (nếu lưu là Timestamp), `device_collected_at`.
 
 ---
 
-## 4. APP — TRẠNG THÁI HIỆN TẠI
+### 🟡 BUG-A3 — CB_CM verify: indicatorMap dùng ind.id thay vì ind.chi_so_id
 
-### Tech Stack
-- React Native + Expo SDK 52 (confirmed từ package.json)
-- Expo Router (file-based routing)
-- Zustand (state management — `store/authStore`)
-- React Native Paper (UI components)
-- `@react-native-community/netinfo` (native — lý do phải EAS build)
-- `@expo/vector-icons` (Ionicons)
+**File**: `(cb-cm)/verify/[subId].jsx`, line 45  
+**Fix**:
+```js
+// Sai:
+(manifest?.indicators || []).forEach(ind => { map[ind.id] = ind; });
+// Đúng:
+(manifest?.indicators || []).forEach(ind => { map[ind.chi_so_id] = ind; });
+```
+**Ảnh hưởng**: Tên chỉ tiêu hiện `undefined` trong verify screen. Không crash, chỉ xấu.
+
+---
+
+### 🟡 BUG-B4 — LANH_DAO không nhận pending_verifications
+
+**File**: `utils/manifest.js`  
+**Mô tả**: Hiện tại chỉ có CB_CM nhận `pending_verifications[]`. LANH_DAO cần nhận toàn bộ (không lọc linh_vuc) để có thể bypass.  
+**Fix**: Thêm block tương tự sau block CB_CM, không filter theo linh_vuc.
+
+---
+
+### 🟡 BUG-B3 — Thiếu field dinh_ky trong Request
+
+**File**: `handlers/requests.js`, `utils/manifest.js`  
+**Mô tả**: Request cần có `dinh_ky: "THANG" | "QUY" | "ADHOC"`. Cần validate + save trong createRequest, trả về trong manifest.  
+**Rule**: Không tạo request định kỳ cho năm quá khứ.
+
+---
+
+### 🔵 BUG-A4, A5, A6 — LANH_DAO verify screens chưa tồn tại
+
+| ID | File | Việc cần làm |
+|---|---|---|
+| BUG-A4 | `(lanh-dao)/index.jsx` | Rewrite: thêm SectionList với section "Cần xử lý" (pending_verifications) |
+| BUG-A5 | `(lanh-dao)/_layout.jsx` | Thêm `Stack.Screen name="verify/[subId]"` |
+| BUG-A6 | `(lanh-dao)/verify/[subId].jsx` | Tạo mới — batch mode only (đơn giản hơn CB_CM) |
+
+---
+
+## 5. APP — TRẠNG THÁI
+
+### Màn hình hiện có
+
+| Screen | Route | Trạng thái |
+|---|---|---|
+| Login | /(auth)/login | ✅ |
+| CB_THON Dashboard | /(cb-thon)/ | ✅ |
+| CB_THON Submit | /(cb-thon)/submit/[reqId] | ✅ |
+| CB_CM Dashboard | /(cb-cm)/ | 🔴 Crash khi login (BUG-B5) |
+| CB_CM Verify | /(cb-cm)/verify/[subId] | ⚠️ Bug A3 (indicator name undefined) |
+| LANH_DAO Dashboard | /(lanh-dao)/ | ⚠️ Cần rewrite (BUG-A4) |
 
 ### Project Structure (App)
 
 ```
 F:\Developers\CARE\CommuneGovernance\app\
 ├── app/
-│   ├── _layout.jsx             ✅ Root layout, AuthGuard, role-based redirect
-│   ├── (auth)/
-│   │   ├── _layout.jsx         ✅
-│   │   └── login.jsx           ✅ BUG-A1+A2 fixed: 2 fields only, lưu ho_ten
+│   ├── _layout.jsx             ✅ Root + AuthGuard + role redirect
+│   ├── (auth)/login.jsx        ✅ 2-field form, lấy xa_code/year từ manifest
 │   ├── (cb-thon)/
-│   │   ├── _layout.jsx         ✅
-│   │   ├── index.jsx           ✅ Danh sách yêu cầu, offline banner
-│   │   └── submit/[reqId].jsx  ✅ Nhập số liệu, offline queue
+│   │   ├── index.jsx           ✅
+│   │   └── submit/[reqId].jsx  ✅
 │   ├── (cb-cm)/
-│   │   ├── _layout.jsx         ✅
-│   │   ├── index.jsx           ✅ Danh sách pending_verifications + filter
-│   │   └── verify/[subId].jsx  ⚠️ BUG: indicatorMap dùng ind.id thay vì ind.chi_so_id
+│   │   ├── index.jsx           🔴 Crash (BUG-B5)
+│   │   └── verify/[subId].jsx  ⚠️ Bug A3
 │   └── (lanh-dao)/
-│       ├── _layout.jsx         ⬜ Cần thêm Stack.Screen verify/[subId]
-│       ├── index.jsx           ⬜ Cần rewrite: thêm Section "Cần xử lý" + pending_verifications
-│       └── verify/[subId].jsx  ⬜ CHƯA TẠO — FEAT-2
+│       ├── index.jsx           ⚠️ Cần rewrite (BUG-A4)
+│       └── verify/[subId].jsx  ⬜ Chưa tồn tại (BUG-A6)
 │
-├── store/
-│   └── authStore.js            ✅ Zustand: token, user, xa_code, year, manifest, offlineQueue
-│
-├── services/
-│   └── api.js                  ✅ login, logout, pullManifest, pushData, verifyData, getDashboard, ...
-│
-├── constants/
-│   ├── theme.js                ✅ COLORS, TYPOGRAPHY, SPACING, RADIUS, SHADOW, TOUCH_TARGET
-│   └── config.js               ✅ ROLES, CURRENT_YEAR, API_BASE_URL
-│
-├── components/
-│   ├── StatusBadge.jsx         ✅
-│   ├── LoadingOverlay.jsx      ✅
-│   └── OfflineBanner.jsx       ✅
-│
-├── app.json                    ✅ scheme: communegovernance, pkg: org.care.communegovernance
-└── eas.json                    ✅ preview: APK internal; production: AAB
+├── store/authStore.js          ✅ Zustand: token, user, xa_code, year, manifest
+├── services/api.js             ✅ login, pullManifest, pushData, verifyData, getDashboard
+├── constants/theme.js          ✅ COLORS, TYPOGRAPHY, SPACING, RADIUS, SHADOW
+├── constants/config.js         ✅ ROLES, CURRENT_YEAR, API_BASE_URL
+└── components/
+    ├── StatusBadge.jsx         ✅
+    ├── LoadingOverlay.jsx      ✅
+    └── OfflineBanner.jsx       ✅
 ```
-
-### Auth Flow (Root Layout)
-
-```
-App start → hydrate() từ AsyncStorage/SecureStore
-         → isLoading=true → splash screen
-         → isLoading=false:
-           - isLoggedIn=false → /(auth)/login
-           - isLoggedIn=true  → /(cb-thon)/ | /(cb-cm)/ | /(lanh-dao)/
-```
-
-### Màn hình hoàn thiện ✅
-
-| Screen | Route | Status |
-|---|---|---|
-| Login | /(auth)/login | ✅ |
-| CB_THON Dashboard | /(cb-thon)/ | ✅ |
-| CB_THON Submit | /(cb-thon)/submit/[reqId] | ✅ |
-| CB_CM Dashboard | /(cb-cm)/ | ✅ |
-| CB_CM Verify | /(cb-cm)/verify/[subId] | ⚠️ Bug nhỏ |
-| LANH_DAO Dashboard | /(lanh-dao)/ | ⚠️ Cần rewrite |
-
-### Màn hình cần xây dựng (ưu tiên theo lớp)
-
-#### Lớp 1 — Nghiệp vụ còn thiếu
-| Screen | Route | FEAT | Priority |
-|---|---|---|---|
-| LANH_DAO Verify | /(lanh-dao)/verify/[subId] | FEAT-2 | 🔴 Cao |
-| CB_CM Tạo yêu cầu | /(cb-cm)/create-request | FEAT-1 | 🔴 Cao |
-| LANH_DAO Duyệt chỉ số | /(lanh-dao)/indicators | — | 🟡 Trung |
-| CB_CM Tạo chỉ số | /(cb-cm)/create-indicator | — | 🟡 Trung |
-
-#### Lớp 2 — Trình bày dữ liệu
-| Screen | Route | Priority |
-|---|---|---|
-| Báo cáo tabular | /reports/table | 🟡 Trung |
-| Biểu đồ thời gian | /reports/chart/[chiSoId] | 🟢 Sau |
-
-#### Lớp 4 — Profile
-| Screen | Route | FEAT | Priority |
-|---|---|---|---|
-| Profile / Settings | /profile | FEAT-3 | 🟡 Trung |
-| Đổi mật khẩu | /profile/change-password | — | 🟢 Sau |
-
-#### Lớp 5 — Admin
-| Screen | Route | FEAT | Priority |
-|---|---|---|---|
-| Tạo user | /admin/create-user | FEAT-4 | 🟢 Sau |
-| Quản lý users | /admin/users | — | 🟢 Sau |
-
-#### Lớp 3 — Tiện ích (để sau cùng)
-| Screen | Route | Priority |
-|---|---|---|
-| Báo cáo sự cố | /incidents/report | ⚪ Cuối |
-| Bản đồ sự cố | /incidents/map | ⚪ Cuối |
 
 ---
 
-## 5. BUGS CÒN TỒN ĐỌNG
+## 6. KIẾN TRÚC 5 LỚP — KẾ HOẠCH THỰC HIỆN
 
-### Backend
+### Lớp 1 — Nghiệp vụ (Business)
 
-| ID | File | Mô tả | Status |
-|---|---|---|---|
-| BUG-B3 | handlers/requests.js | Thiếu field `dinh_ky` (THANG/QUY/ADHOC) trong createRequest | ⬜ Chưa fix |
-| BUG-B4 | utils/manifest.js | LANH_DAO chưa nhận `pending_verifications[]` (zip hiện tại chưa có) | ⚠️ Cần verify |
+**LANH_DAO:**
+- ✅ Dashboard tiến độ nộp số liệu
+- ⬜ Xác minh bypass (FEAT-2) — cần BUG-B4 + BUG-A4/A5/A6
+- ⬜ Nhắc nhở CB_CM/CB_THON (FEAT-nhắc)
+- ⬜ Duyệt bộ chỉ số PENDING → ACTIVE
 
-> **BUG-B3 rule**: Không tạo request định kỳ cho năm quá khứ. `dinh_ky` cần thêm vào createRequest validation + manifest response.
+**CB_CHUYEN_MON:**
+- ✅ Xem + xét duyệt submissions
+- ⬜ Tạo yêu cầu thu thập thông tin (FEAT-1) — cần BUG-B3 trước
+- ⬜ Tạo + trình bộ chỉ số
 
-### App
+**CB_THON:**
+- ✅ Xem yêu cầu, nộp số liệu, offline queue
+- ✅ Sửa và nộp lại (resubmit_data)
 
-| ID | File | Mô tả | Status |
-|---|---|---|---|
-| BUG-A3 | (cb-cm)/verify/[subId].jsx | `indicatorMap` dùng `ind.id` thay vì `ind.chi_so_id` → tên chỉ số hiện undefined | ⬜ Chưa fix |
-| BUG-A4 | (lanh-dao)/index.jsx | Cần rewrite: thêm section "Cần xử lý" với pending_verifications | ⬜ Cần làm |
-| BUG-A5 | (lanh-dao)/_layout.jsx | Cần thêm Stack.Screen `verify/[subId]` | ⬜ Cần làm |
-| BUG-A6 | (lanh-dao)/verify/[subId].jsx | File chưa tồn tại (FEAT-2) | ⬜ Cần tạo |
+### Lớp 2 — Trình bày dữ liệu (Presentation)
 
-> **BUG-A3 fix**: Line 45 trong `(cb-cm)/verify/[subId].jsx`:
-> ```js
-> // Sai:
-> (manifest?.indicators || []).forEach(ind => { map[ind.id] = ind; });
-> // Đúng:
-> (manifest?.indicators || []).forEach(ind => { map[ind.chi_so_id] = ind; });
-> ```
+- **Tabular**: số liệu VERIFIED, lọc theo req/năm/thôn, theo role scope
+- **Chart**: trend time-series cho chỉ số dạng `so` (kieu_du_lieu = "so")
+- Backend: `GET /dashboard` có thể extend, hoặc endpoint mới `GET /report_data`
+- ⬜ Chưa xây dựng
 
----
+### Lớp 3 — Tiện ích sự cố *(Để sau cùng)*
 
-## 6. FEATURES ROADMAP
+- Báo cáo: thiên tai, sạt lở, dịch bệnh + GPS geotag
+- Cần: `POST /report_incident`, Firestore collection `incidents/`, map rendering
+- ⬜ Chưa xây dựng
 
-### FEAT-1: CB_CM Tạo yêu cầu số liệu (App UI)
-- Backend `createRequest` đã có ✅
-- App cần: form chọn bộ chỉ số (filter theo linh_vuc của CB_CM), chọn định kỳ, chọn danh_sach_thon
-- Khi nhánh=UBND → gửi đến CB_THON thuộc UBND; nhánh=MTTQ → CB_THON thuộc MTTQ
-- Cần thêm `dinh_ky` vào backend trước (BUG-B3)
+### Lớp 4 — Hồ sơ người dùng (Profile)
 
-### FEAT-2: LANH_DAO Verify trực tiếp (Bypass)
-- Backend: đã hỗ trợ — PERMISSION_MATRIX cho phép LANH_DAO verify_data ✅
-- Backend: `pending_verifications` cho LANH_DAO cần thêm vào manifest.js (BUG-B4)
-- App: cần tạo `(lanh-dao)/verify/[subId].jsx` — UI đơn giản hơn CB_CM (batch mode only: Xác nhận / Yêu cầu sửa)
-- App: rewrite `(lanh-dao)/index.jsx` — thêm SectionList với section "Cần xử lý"
-- Không có warning popup về bypass (chỉ log backend)
+- Thông tin user, đổi mật khẩu
+- Chọn năm báo cáo (FEAT-3): mặc định năm hiện tại, xem lại năm cũ read-only
+- ⬜ Chưa xây dựng
 
-### FEAT-3: Settings / Chọn năm báo cáo
-- Mặc định năm hiện tại từ `manifest.config.current_year`
-- Cho phép xem lại năm cũ (read-only, không tạo request mới)
-- LANH_DAO/ADMIN có thể config định kỳ mặc định cho xã
-- Nằm ở **Lớp 4 — Profile/Settings**
+### Lớp 5 — Quản trị (Admin)
 
-### FEAT-4: Admin tạo user
-- Cần endpoint mới: `POST /create_user`
-- Body: `{ vai_tro, nhanh, don_vi, linh_vuc_codes, ho_ten, xa_code }`
-- Generate password tạm, user đổi lần đầu login
-- Nằm ở **Lớp 5 — Admin**
-
-### FEAT-5: Voice Transcription (Azure Speech) — để sau cùng
-- Architecture: Token endpoint
-  - `POST /speech_token` → Azure auth token (10 min)
-  - Client dùng Azure SDK trực tiếp (mic → text on device)
-- Env vars: `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION=southeastasia`
-- Files cần tạo: `handlers/transcribe.js`
-
-### FEAT-6: Lớp 2 — Báo cáo & Biểu đồ (Presentation)
-- Tabular: dữ liệu đã VERIFIED, lọc theo req_id / năm / thôn
-- Chart: trend theo thời gian cho chỉ số dạng số (kieu_du_lieu = "so")
-- Backend: có thể dùng `GET /dashboard` + query theo chi_so_id
-
-### FEAT-7: Lớp 3 — Tiện ích sự cố (Để sau cùng)
-- Báo cáo sự cố với geotag (GPS)
-- Cần endpoint mới: `POST /report_incident`
-- Cần Firestore collection mới: `communes/{xa_code}/incidents/{incident_id}`
-- Map rendering: có thể dùng MapView (cần native module → EAS build)
+- Tạo/quản lý user (FEAT-4): cần `POST /create_user` backend trước
+- Config định kỳ cho xã
+- ⬜ Chưa xây dựng
 
 ---
 
 ## 7. THỨ TỰ THỰC HIỆN (Recommended)
 
+### Giai đoạn 1 — Fix crash & hoàn thiện core (Ưu tiên NGAY)
+
 ```
-Giai đoạn 1 — Hoàn thiện nghiệp vụ core (Lớp 1)
-  1. Fix BUG-A3: CB_CM verify — ind.id → ind.chi_so_id
-  2. Fix BUG-B3 (backend): thêm dinh_ky vào createRequest
-  3. Fix BUG-B4 (backend): LANH_DAO pending_verifications trong manifest.js
-  4. FEAT-2 (app): tạo (lanh-dao)/verify/[subId].jsx + rewrite index.jsx + layout
-  5. FEAT-1 (app): CB_CM tạo yêu cầu — UI form
-  6. Build + test EAS APK → test với 3 test users
+1. BUG-B5 (backend): Thêm _toIso() helper vào manifest.js
+   → Convert submitted_at + tất cả Timestamp fields sang ISO string
+   → Deploy backend
 
-Giai đoạn 2 — Lớp 4 Profile
-  7. FEAT-3: Profile/Settings + chọn năm báo cáo
+2. BUG-A3 (app): ind.id → ind.chi_so_id trong (cb-cm)/verify/[subId].jsx
+   → Build + test CB_CM login → không crash → verify screen hiện tên đúng
 
-Giai đoạn 3 — Lớp 5 Admin
-  8. FEAT-4 backend: POST /create_user
-  9. FEAT-4 app: Admin screen tạo user
+3. BUG-B4 (backend): Thêm pending_verifications cho LANH_DAO trong manifest.js
+   → Deploy backend
 
-Giai đoạn 4 — Lớp 2 Presentation
-  10. FEAT-6: màn hình báo cáo tabular
-  11. FEAT-6: biểu đồ time-series
+4. BUG-A4/A5/A6 (app): FEAT-2 — tạo LANH_DAO verify screens
+   → (lanh-dao)/index.jsx rewrite
+   → (lanh-dao)/_layout.jsx update
+   → (lanh-dao)/verify/[subId].jsx tạo mới
+   → Build + test LANH_DAO verify
 
-Giai đoạn 5 — Tính năng nâng cao (để sau)
-  12. FEAT-5: Voice Azure Speech
-  13. FEAT-7: Lớp 3 sự cố + geotag
+5. BUG-B3 + FEAT-1 (backend+app): dinh_ky + CB_CM tạo yêu cầu
+```
+
+### Giai đoạn 2 — Navigation refactor (Trước khi xây Lớp 2+)
+
+```
+6. Refactor navigation sang Tab + Stack
+   → Thêm bottom tab bar với tabs: Nghiệp vụ / Báo cáo / Hồ sơ (/ Admin nếu role cho phép)
+   → Move existing role screens vào tab "Nghiệp vụ"
+```
+
+### Giai đoạn 3 — Lớp 2 Presentation
+
+```
+7. FEAT-6: Báo cáo tabular (data đã VERIFIED)
+8. FEAT-6: Biểu đồ time-series
+```
+
+### Giai đoạn 4 — Lớp 4 & 5
+
+```
+9.  FEAT-3: Profile + Settings + chọn năm
+10. FEAT-4: POST /create_user (backend trước)
+11. FEAT-4: Admin create user screen (app)
+```
+
+### Giai đoạn 5 — Lớp 3 & Voice *(Để sau cùng)*
+
+```
+12. FEAT-5: Voice (Azure Speech)
+13. FEAT-7: Incident reporting + geotag
 ```
 
 ---
 
-## 8. FIRESTORE SCHEMA (tóm tắt)
+## 8. FIRESTORE SCHEMA
 
 ```
 users/{user_id}
@@ -434,22 +447,25 @@ users/{user_id}
 
 communes/{xa_code}/indicators/{chi_so_id}
   chi_so_id, ten_chi_so, mo_ta, don_vi_do, kieu_du_lieu,
-  linh_vuc, validation{}, status(DRAFT/PENDING/ACTIVE/ARCHIVED),
+  linh_vuc, validation{}, status(DRAFT→PENDING→ACTIVE→ARCHIVED),
   created_by, approved_by, year
 
 communes/{xa_code}/requests/{req_id}
   req_id, tieu_de, tao_boi, danh_sach_thon[], chi_so_ids[],
-  deadline, dinh_ky(THANG/QUY/ADHOC), ghi_chu,
+  deadline, dinh_ky(THANG/QUY/ADHOC)*, ghi_chu,
   status(OPEN/IN_PROGRESS/COMPLETED/CANCELLED), year
+  * dinh_ky: cần thêm (BUG-B3)
 
 communes/{xa_code}/submissions/{submission_id}
   submission_id, req_id, thon_code, submitted_by,
-  submitted_at, device_collected_at, values{},
-  anh_urls[], status, verified_by, verified_at,
-  indicator_reviews{}, rejection_reason, year
+  submitted_at(Timestamp), device_collected_at(Timestamp),
+  values{}, anh_urls[],
+  status(PENDING_VERIFY/IN_REVIEW/VERIFIED/NEEDS_REVISION/REJECTED),
+  verified_by, verified_at, indicator_reviews{},
+  rejection_reason, year
 
 communes/{xa_code}/manifests/current
-  Pre-computed, rebuilt on every indicator/request change
+  Pre-computed document, rebuilt on every indicator/request change
 
 xa_registry/{xa_code}
   xa_code, xa_name, tinh, sheets_id, drive_folder_id, status
@@ -460,7 +476,7 @@ audit_logs/{auto-id}
 
 ---
 
-## 9. MANIFEST RESPONSE STRUCTURE (confirmed từ API)
+## 9. MANIFEST RESPONSE (confirmed from API)
 
 ### CB_THON
 ```json
@@ -471,8 +487,8 @@ audit_logs/{auto-id}
   "requests": [
     {
       "req_id", "tieu_de", "deadline",
-      "chi_so_ids": ["CS001"],      ← array ✅ (BUG-B1 fixed)
-      "danh_sach_thon": ["THON01"], ← array ✅
+      "chi_so_ids": ["CS001"],        ← array ✅ (BUG-B1 fixed)
+      "danh_sach_thon": ["THON01"],   ← array ✅ (BUG-B1 fixed)
       "has_submitted": true,
       "tao_boi": "USR_LANHDAO"
     }
@@ -481,15 +497,17 @@ audit_logs/{auto-id}
 }
 ```
 
-### CB_CM
+### CB_CM (sau khi fix BUG-B5)
 ```json
 {
   "user": { "vai_tro": "CB_CHUYEN_MON", ... },
-  "requests": [...],  ← requests thuộc linh_vuc của mình
+  "requests": [...],
   "pending_verifications": [
     {
       "submission_id", "req_id", "thon_code", "status",
-      "submitted_by", "submitted_at", "values": {},
+      "submitted_by",
+      "submitted_at": "2025-06-15T09:00:00.000Z",  ← ISO string ✅ (sau fix)
+      "values": {},
       "tieu_de", "deadline"
     }
   ]
@@ -500,50 +518,23 @@ audit_logs/{auto-id}
 ```json
 {
   "user": { "vai_tro": "LANH_DAO", ... },
-  "requests": [...],  ← tất cả requests
-  "pending_verifications": [...]  ← TẤT CẢ submissions (không lọc linh_vuc)
+  "requests": [...],
+  "pending_verifications": [...]  ← TẤT CẢ submissions, không lọc linh_vuc
 }
 ```
 
 ---
 
-## 10. WORKFLOW DEPLOY
-
-```powershell
-# ── Backend ──────────────────────────────────────────────────
-cd F:\Developers\CARE\CommuneGovernance
-npx firebase use communegovernance --account ngocdd@thiennhienviet.org.vn
-npx firebase deploy --only functions
-
-# ── App Build ─────────────────────────────────────────────────
-cd F:\Developers\CARE\CommuneGovernance\app
-$env:PATH += ";C:\Users\Administrator\AppData\Roaming\npm"
-eas build --platform android --profile preview
-
-# ── Test Login ────────────────────────────────────────────────
-Invoke-RestMethod `
-  -Uri "https://careapi-cx7avsd4pa-as.a.run.app/login" `
-  -Method POST `
-  -ContentType "application/json" `
-  -Body '{"user_id":"USR_LANHDAO","password":"Test@1234"}' `
-  | ConvertTo-Json -Depth 5
-
-# ── Health Check ──────────────────────────────────────────────
-Invoke-RestMethod -Uri "https://careapi-cx7avsd4pa-as.a.run.app/health"
-```
-
----
-
-## 11. PRINCIPLES & CONSTRAINTS (bất biến)
+## 10. PRINCIPLES & CONSTRAINTS (bất biến)
 
 ```
-OFFLINE-FIRST:  1 read (pull) + 1 write (push) mỗi session. Không call khác khi nhập liệu.
-ZERO VM:        Serverless hoàn toàn. Cloud Functions + Firestore + Cloud Run.
+OFFLINE-FIRST:  1 pull khi có mạng → nhập liệu offline → 1 push khi có mạng lại
+ZERO VM:        Serverless hoàn toàn. Cloud Functions + Firestore. Zero maintenance.
 SHEETS OUTPUT:  Google Sheets chỉ để CARE staff đọc — không phải database.
-SCALE:          4 → 500 xã chỉ thêm data, không đổi code/architecture.
+SCALE:          4 → 500 xã: chỉ thêm data, không đổi code/architecture.
 
 R1: CHỈ LANH_DAO được approve indicator (PENDING → ACTIVE)
-R2: CHỈ CB_THON được push_data
+R2: CHỈ CB_THON được push_data — bypass không được phép
 R3: CB_CM chỉ tạo/verify indicators thuộc linh_vuc_codes của mình
 R4: CB_THON KHÔNG BAO GIỜ thấy data thôn khác
 R5: push_data verify user.don_vi ∈ request.danh_sach_thon (anti-forge)
@@ -553,6 +544,30 @@ R7: (req_id, thon_code) chỉ submit 1 lần — check duplicate trước write
 
 ---
 
-*Context V3 — CommuneGovernance CARE Vietnam*
+## 11. HANDLER PATTERN (luôn follow)
+
+```js
+async function myHandler(req, res) {
+  const user = await validateToken(req);
+  const { xa_code, year, ...data } = req.body;
+
+  // 1. Validate input
+  if (!xa_code || !year)
+    return errorResponse(res, ERROR_CODES.DATA_001, "...");
+
+  // 2. Check permission (TRƯỚC mọi business logic)
+  checkPermission(user, ACTIONS.MY_ACTION, { nhanh: user.nhanh });
+
+  // 3. Business logic...
+  
+  // 4. Audit log (sau mọi write)
+  await logAudit(user, ACTIONS.MY_ACTION, { ... }, req);
+
+  return successResponse(res, { ... });
+}
+```
+
+---
+
+*Context V3.1 — CommuneGovernance CARE Vietnam*
 *Updated: 27/05/2026*
-*By: Claude Sonnet (working with @paulsteigel)*
