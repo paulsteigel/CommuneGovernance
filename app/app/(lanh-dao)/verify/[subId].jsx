@@ -1,8 +1,10 @@
 // app/(lanh-dao)/verify/[subId].jsx
-// LANH_DAO — Xét duyệt bypass (batch mode only, đơn giản hơn CB_CM).
-// R1: Chỉ LANH_DAO được approve — đây là bypass toàn bộ, không per_indicator.
+// LANH_DAO — Xét duyệt bypass.
+// Batch mode:         2 nút Xác nhận / Từ chối + comment
+// Per-indicator mode: bảng checkbox toggle-all + comment
+// (Same UX pattern as CB_CM, cùng logic)
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, Alert,
@@ -16,30 +18,21 @@ import StatusBadge from "../../../components/StatusBadge";
 import LoadingOverlay from "../../../components/LoadingOverlay";
 import { COLORS, TYPOGRAPHY, SPACING, RADIUS, SHADOW, TOUCH_TARGET } from "../../../constants/theme";
 
-const DECISIONS = [
-  { key: "confirm", label: "Xác nhận ✓", color: COLORS.primary,    bg: COLORS.primaryPale },
-  { key: "flag",    label: "Cần xem lại", color: COLORS.accentLight, bg: COLORS.pendingBg },
-  { key: "reject",  label: "Từ chối ✗",  color: COLORS.danger,      bg: COLORS.dangerBg },
-];
-
 export default function LanhDaoVerifyScreen() {
   const { subId } = useLocalSearchParams();
   const router    = useRouter();
   const { user, manifest, xa_code, token } = useAuthStore();
 
-  // Tìm submission từ manifest
   const submission = useMemo(() =>
     (manifest?.pending_verifications || []).find(s => s.submission_id === subId),
     [manifest, subId]
   );
 
-  // Tìm request info
   const request = useMemo(() =>
     (manifest?.requests || []).find(r => r.req_id === submission?.req_id),
     [manifest, submission]
   );
 
-  // Indicator map — FIX BUG-A3: dùng chi_so_id (không phải id)
   const indicatorMap = useMemo(() => {
     const map = {};
     (manifest?.indicators || []).forEach(ind => { map[ind.chi_so_id] = ind; });
@@ -48,25 +41,53 @@ export default function LanhDaoVerifyScreen() {
 
   const chiSoIds = request?.chi_so_ids || [];
 
+  const [mode,     setMode]    = useState("batch");
   const [decision, setDecision] = useState(null);
   const [comment,  setComment]  = useState("");
   const [loading,  setLoading]  = useState(false);
 
+  const [checked, setChecked] = useState(() => {
+    const init = {};
+    chiSoIds.forEach(id => { init[id] = true; });
+    return init;
+  });
+
+  const allChecked  = chiSoIds.length > 0 && chiSoIds.every(id => checked[id]);
+  const someChecked = chiSoIds.some(id => checked[id]);
+
+  const toggleAll = useCallback(() => {
+    const next = !allChecked;
+    const updated = {};
+    chiSoIds.forEach(id => { updated[id] = next; });
+    setChecked(updated);
+  }, [allChecked, chiSoIds]);
+
+  const toggleOne = useCallback((id) => {
+    setChecked(prev => ({ ...prev, [id]: !prev[id] }));
+  }, []);
+
+  function buildIndReviews() {
+    const reviews = {};
+    chiSoIds.forEach(id => {
+      reviews[id] = { status: checked[id] ? "confirmed" : "rejected" };
+    });
+    return reviews;
+  }
+
   async function handleSubmit() {
-    if (!decision) {
+    if (mode === "batch" && !decision) {
       Alert.alert("Chưa chọn quyết định", "Vui lòng chọn Xác nhận hoặc Từ chối.");
       return;
     }
 
-    const label = DECISIONS.find(d => d.key === decision)?.label || decision;
-    Alert.alert(
-      "Xác nhận xét duyệt",
-      `Bạn sẽ ${label.toUpperCase()} bộ số liệu này với tư cách Lãnh đạo xã.`,
-      [
-        { text: "Hủy", style: "cancel" },
-        { text: "Đồng ý", onPress: doVerify },
-      ]
-    );
+    const confirmText = mode === "batch"
+      ? `Bạn sẽ ${decision === "confirm" ? "XÁC NHẬN" : "TỪ CHỐI"} toàn bộ bộ số liệu.`
+      : `${chiSoIds.filter(id => checked[id]).length}/${chiSoIds.length} chỉ tiêu được xác nhận.`;
+
+    Alert.alert("Xác nhận xét duyệt lãnh đạo", confirmText, [
+      { text: "Hủy", style: "cancel" },
+      { text: "Đồng ý", onPress: doVerify },
+    ]);
   }
 
   async function doVerify() {
@@ -74,15 +95,16 @@ export default function LanhDaoVerifyScreen() {
     try {
       await verifyData({
         token,
-        user_id:        user.user_id,
+        user_id:           user.user_id,
         xa_code,
-        submission_id:  subId,
-        verify_mode:    "batch",
-        decision,
-        verify_comment: comment.trim() || undefined,
+        submission_id:     subId,
+        verify_mode:       mode,
+        decision:          mode === "batch" ? decision : "confirm",
+        indicator_reviews: mode === "per_indicator" ? buildIndReviews() : undefined,
+        verify_comment:    comment.trim() || undefined,
       });
 
-      Alert.alert("Xét duyệt thành công ✓", "Đã lưu kết quả.", [
+      Alert.alert("Xét duyệt thành công ✓", "Đã lưu quyết định.", [
         { text: "OK", onPress: () => router.back() },
       ]);
     } catch (err) {
@@ -111,9 +133,9 @@ export default function LanhDaoVerifyScreen() {
       <SafeAreaView style={styles.safe} edges={["bottom"]}>
         {loading && <LoadingOverlay message="Đang lưu xét duyệt..." />}
 
-        <ScrollView contentContainerStyle={styles.scroll}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
 
-          {/* Info card */}
+          {/* ── Info card ── */}
           <View style={styles.infoCard}>
             {[
               { label: "Yêu cầu",   value: submission.tieu_de || submission.req_id },
@@ -132,57 +154,135 @@ export default function LanhDaoVerifyScreen() {
             </View>
           </View>
 
-          {/* Values */}
-          <Text style={styles.sectionTitle}>Số liệu đã nộp</Text>
-          {chiSoIds.length === 0 ? (
-            <Text style={styles.noData}>Không có chỉ tiêu nào</Text>
-          ) : chiSoIds.map(id => {
-            const ind = indicatorMap[id];
-            const val = submission.values?.[id];
-            return (
-              <View key={id} style={styles.valueRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.indName}>{ind?.ten_chi_so || id}</Text>
-                  <Text style={styles.indId}>{id}</Text>
-                </View>
-                <Text style={styles.indValue}>
-                  {val !== undefined
-                    ? `${val}${ind?.don_vi_do ? " " + ind.don_vi_do : ""}`
-                    : "—"}
-                </Text>
-              </View>
-            );
-          })}
-
-          {/* Decision */}
-          <Text style={styles.sectionTitle}>Quyết định</Text>
-          <View style={styles.decisionRow}>
-            {DECISIONS.map(d => (
+          {/* ── Mode toggle ── */}
+          <View style={styles.modeRow}>
+            {[
+              { key: "batch",         label: "Theo bộ số liệu", icon: "checkmark-done" },
+              { key: "per_indicator", label: "Từng chỉ tiêu",   icon: "list" },
+            ].map(m => (
               <TouchableOpacity
-                key={d.key}
-                style={[
-                  styles.decisionBtn,
-                  { borderColor: d.color, backgroundColor: decision === d.key ? d.color : d.bg },
-                ]}
-                onPress={() => setDecision(d.key)}
-                activeOpacity={0.8}
+                key={m.key}
+                style={[styles.modeBtn, mode === m.key && styles.modeBtnActive]}
+                onPress={() => setMode(m.key)}
               >
-                <Text style={[
-                  styles.decisionText,
-                  { color: decision === d.key ? COLORS.white : d.color },
-                ]}>
-                  {d.label}
+                <Ionicons
+                  name={m.icon}
+                  size={16}
+                  color={mode === m.key ? COLORS.white : COLORS.textSecondary}
+                />
+                <Text style={[styles.modeBtnText, mode === m.key && styles.modeBtnTextActive]}>
+                  {m.label}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          {/* Comment */}
+          {/* ── BATCH MODE ── */}
+          {mode === "batch" && (
+            <>
+              <Text style={styles.sectionTitle}>Quyết định lãnh đạo</Text>
+              <View style={styles.decisionRow}>
+                {[
+                  { key: "confirm", label: "Xác nhận ✓", color: COLORS.primary, bg: COLORS.primaryPale },
+                  { key: "reject",  label: "Từ chối ✗",  color: COLORS.danger,  bg: COLORS.dangerBg },
+                ].map(d => (
+                  <TouchableOpacity
+                    key={d.key}
+                    style={[
+                      styles.decisionBtn,
+                      { borderColor: d.color, backgroundColor: decision === d.key ? d.color : d.bg },
+                    ]}
+                    onPress={() => setDecision(d.key)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.decisionText, { color: decision === d.key ? COLORS.white : d.color }]}>
+                      {d.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </>
+          )}
+
+          {/* ── PER-INDICATOR MODE: bảng checkbox ── */}
+          {mode === "per_indicator" && (
+            <>
+              <Text style={styles.sectionTitle}>Chọn chỉ tiêu đạt chuẩn</Text>
+              <View style={styles.table}>
+
+                <TouchableOpacity style={styles.tableHeader} onPress={toggleAll} activeOpacity={0.7}>
+                  <Text style={styles.tableHeaderText}>Chỉ tiêu</Text>
+                  <Text style={[styles.tableHeaderText, styles.colValue]}>Giá trị</Text>
+                  <View style={styles.colCheck}>
+                    <Ionicons
+                      name={allChecked ? "checkbox" : someChecked ? "remove-circle" : "square-outline"}
+                      size={22}
+                      color={allChecked ? COLORS.primary : someChecked ? COLORS.accentLight : COLORS.textHint}
+                    />
+                    <Text style={styles.toggleAllLabel}>Tất cả</Text>
+                  </View>
+                </TouchableOpacity>
+
+                <View style={styles.tableDivider} />
+
+                {chiSoIds.map((id, idx) => {
+                  const ind    = indicatorMap[id];
+                  const val    = submission.values?.[id];
+                  const isLast = idx === chiSoIds.length - 1;
+                  return (
+                    <View key={id}>
+                      <TouchableOpacity
+                        style={styles.tableRow}
+                        onPress={() => toggleOne(id)}
+                        activeOpacity={0.6}
+                      >
+                        <View style={styles.colName}>
+                          <Text style={styles.indName} numberOfLines={2}>{ind?.ten_chi_so || id}</Text>
+                          <Text style={styles.indId}>{id}</Text>
+                        </View>
+                        <Text style={styles.colValue}>
+                          {val !== undefined
+                            ? `${val}${ind?.don_vi_do ? " " + ind.don_vi_do : ""}`
+                            : "—"}
+                        </Text>
+                        <View style={[styles.colCheck, { justifyContent: "center" }]}>
+                          <Ionicons
+                            name={checked[id] ? "checkbox" : "square-outline"}
+                            size={24}
+                            color={checked[id] ? COLORS.primary : COLORS.textHint}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                      {!isLast && <View style={styles.rowDivider} />}
+                    </View>
+                  );
+                })}
+
+                <View style={styles.tableDivider} />
+                <View style={styles.tableFooter}>
+                  <Text style={styles.tableFooterText}>
+                    Xác nhận:{" "}
+                    <Text style={{ color: COLORS.primary, fontWeight: "700" }}>
+                      {chiSoIds.filter(id => checked[id]).length}
+                    </Text>
+                    {" / "}{chiSoIds.length}
+                  </Text>
+                  {chiSoIds.filter(id => !checked[id]).length > 0 && (
+                    <Text style={styles.tableFooterReject}>
+                      Từ chối: {chiSoIds.filter(id => !checked[id]).length}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            </>
+          )}
+
+          {/* ── Comment chung ── */}
           <Text style={styles.sectionTitle}>Ghi chú lãnh đạo (tùy chọn)</Text>
           <View style={styles.commentWrap}>
             <TextInput
               style={styles.commentInput}
-              placeholder="Nhập ghi chú..."
+              placeholder="Nhập nhận xét của lãnh đạo..."
               placeholderTextColor={COLORS.textHint}
               value={comment}
               onChangeText={setComment}
@@ -192,11 +292,11 @@ export default function LanhDaoVerifyScreen() {
             />
           </View>
 
-          {/* Submit */}
+          {/* ── Submit ── */}
           <TouchableOpacity
-            style={[styles.submitBtn, !decision && styles.submitBtnDisabled]}
+            style={[styles.submitBtn, (mode === "batch" && !decision) && styles.submitBtnDisabled]}
             onPress={handleSubmit}
-            disabled={!decision}
+            disabled={mode === "batch" && !decision}
             activeOpacity={0.85}
           >
             <Ionicons name="shield-checkmark" size={22} color={COLORS.white} />
@@ -210,71 +310,52 @@ export default function LanhDaoVerifyScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe:   { flex: 1, backgroundColor: COLORS.background },
-  scroll: { padding: SPACING.md, paddingBottom: SPACING.xxl },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", gap: SPACING.sm, padding: SPACING.xl },
+  safe:      { flex: 1, backgroundColor: COLORS.background },
+  scroll:    { padding: SPACING.md, paddingBottom: SPACING.xxl },
+  center:    { flex: 1, justifyContent: "center", alignItems: "center", gap: SPACING.sm, padding: SPACING.xl },
   errorText: { ...TYPOGRAPHY.bodyLarge, color: COLORS.danger },
   errorSub:  { ...TYPOGRAPHY.caption, color: COLORS.textHint },
 
   infoCard: {
-    backgroundColor: COLORS.white,
-    borderRadius:    RADIUS.lg,
-    padding:         SPACING.lg,
-    marginBottom:    SPACING.lg,
-    ...SHADOW.card,
-    gap:             SPACING.sm,
+    backgroundColor: COLORS.white, borderRadius: RADIUS.lg,
+    padding: SPACING.lg, marginBottom: SPACING.lg, ...SHADOW.card, gap: SPACING.sm,
   },
   infoRow:   { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   infoLabel: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
   infoValue: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textPrimary, fontWeight: "600", flex: 1, textAlign: "right" },
 
-  sectionTitle: { ...TYPOGRAPHY.titleMedium, color: COLORS.textPrimary, marginBottom: SPACING.md, marginTop: SPACING.md },
-  noData:       { ...TYPOGRAPHY.bodyMedium, color: COLORS.textHint, marginBottom: SPACING.md },
+  sectionTitle: { ...TYPOGRAPHY.titleMedium, color: COLORS.textPrimary, marginBottom: SPACING.sm, marginTop: SPACING.md },
 
-  valueRow: {
-    flexDirection:   "row",
-    alignItems:      "center",
-    backgroundColor: COLORS.white,
-    borderRadius:    RADIUS.md,
-    padding:         SPACING.md,
-    marginBottom:    SPACING.sm,
-    ...SHADOW.card,
-  },
-  indName:  { ...TYPOGRAPHY.bodyLarge, color: COLORS.textPrimary, fontWeight: "600" },
-  indId:    { ...TYPOGRAPHY.caption,   color: COLORS.textHint },
-  indValue: { ...TYPOGRAPHY.titleMedium, color: COLORS.primary },
+  modeRow:           { flexDirection: "row", gap: SPACING.sm, marginBottom: SPACING.sm },
+  modeBtn:           { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: SPACING.xs, borderWidth: 1.5, borderColor: COLORS.border, borderRadius: RADIUS.md, paddingVertical: SPACING.md, backgroundColor: COLORS.white },
+  modeBtnActive:     { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  modeBtnText:       { ...TYPOGRAPHY.labelMedium, color: COLORS.textSecondary },
+  modeBtnTextActive: { color: COLORS.white },
 
-  decisionRow: { flexDirection: "row", gap: SPACING.sm, marginBottom: SPACING.md },
-  decisionBtn: {
-    flex:            1,
-    borderWidth:     2,
-    borderRadius:    RADIUS.md,
-    paddingVertical: SPACING.md,
-    alignItems:      "center",
-  },
-  decisionText: { ...TYPOGRAPHY.labelMedium, textAlign: "center" },
+  decisionRow:  { flexDirection: "row", gap: SPACING.md, marginBottom: SPACING.md },
+  decisionBtn:  { flex: 1, borderWidth: 2, borderRadius: RADIUS.md, paddingVertical: SPACING.lg, alignItems: "center" },
+  decisionText: { ...TYPOGRAPHY.titleMedium, textAlign: "center" },
 
-  commentWrap: {
-    backgroundColor: COLORS.white,
-    borderRadius:    RADIUS.md,
-    borderWidth:     1.5,
-    borderColor:     COLORS.border,
-    padding:         SPACING.md,
-    marginBottom:    SPACING.md,
-    minHeight:       100,
-  },
+  table:           { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, marginBottom: SPACING.md, ...SHADOW.card, overflow: "hidden" },
+  tableHeader:     { flexDirection: "row", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.primaryPale },
+  tableHeaderText: { ...TYPOGRAPHY.labelMedium, color: COLORS.primary, flex: 1 },
+  colName:         { flex: 1, paddingRight: SPACING.sm },
+  colValue:        { width: 80, textAlign: "right", ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
+  colCheck:        { width: 56, alignItems: "center", flexDirection: "column" },
+  toggleAllLabel:  { ...TYPOGRAPHY.caption, color: COLORS.primary, marginTop: 2 },
+  tableDivider:    { height: 1, backgroundColor: COLORS.divider },
+  tableRow:        { flexDirection: "row", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.md },
+  rowDivider:      { height: 1, backgroundColor: COLORS.background, marginHorizontal: SPACING.md },
+  indName:         { ...TYPOGRAPHY.bodyMedium, color: COLORS.textPrimary, fontWeight: "600" },
+  indId:           { ...TYPOGRAPHY.caption, color: COLORS.textHint, marginTop: 2 },
+  tableFooter:     { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.background },
+  tableFooterText: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
+  tableFooterReject: { ...TYPOGRAPHY.bodyMedium, color: COLORS.danger },
+
+  commentWrap:  { backgroundColor: COLORS.white, borderRadius: RADIUS.md, borderWidth: 1.5, borderColor: COLORS.border, padding: SPACING.md, marginBottom: SPACING.md, minHeight: 100 },
   commentInput: { ...TYPOGRAPHY.bodyLarge, color: COLORS.textPrimary, minHeight: 80 },
 
-  submitBtn: {
-    flexDirection:   "row",
-    backgroundColor: COLORS.primary,
-    borderRadius:    RADIUS.md,
-    height:          TOUCH_TARGET + 8,
-    justifyContent:  "center",
-    alignItems:      "center",
-    gap:             SPACING.sm,
-    ...SHADOW.elevated,
-  },
+  submitBtn:         { flexDirection: "row", backgroundColor: COLORS.primary, borderRadius: RADIUS.md, height: TOUCH_TARGET + 8, justifyContent: "center", alignItems: "center", gap: SPACING.sm, ...SHADOW.elevated },
   submitBtnDisabled: { backgroundColor: COLORS.textHint },
   submitBtnText:     { ...TYPOGRAPHY.titleMedium, color: COLORS.white },
 });

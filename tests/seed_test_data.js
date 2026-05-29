@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * seed_test_data.js — Run once to create all Firestore test data
+ * seed_test_data.js — Reset & seed all Firestore test data
+ * v2: clears submissions first, then seeds with realistic test state
  * Usage: node tests/seed_test_data.js
  */
 "use strict";
@@ -15,9 +16,9 @@ admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db        = admin.firestore();
 const Timestamp = admin.firestore.Timestamp;
 
-function generateSalt()        { return crypto.randomBytes(16).toString("hex"); }
-function hashPassword(p, s)    { return crypto.createHash("sha256").update(p + s).digest("hex"); }
-function generateToken()       { return crypto.randomBytes(32).toString("hex"); }
+function generateSalt()     { return crypto.randomBytes(16).toString("hex"); }
+function hashPassword(p, s) { return crypto.createHash("sha256").update(p + s).digest("hex"); }
+function generateToken()    { return crypto.randomBytes(32).toString("hex"); }
 
 const XA_CODE   = "XATEST";
 const YEAR      = 2025;
@@ -26,19 +27,19 @@ const THON_CODE = "THON01";
 const USERS = [
   {
     user_id: "USR_THON01", password: "Test@1234",
-    ho_ten:  "Nguyễn Văn Test",
+    ho_ten: "Nguyễn Văn Test",
     vai_tro: "CB_THON", don_vi: THON_CODE, nhanh: "UBND",
     linh_vuc_codes: null,
   },
   {
     user_id: "USR_CBCM01", password: "Test@1234",
-    ho_ten:  "Lê Thị Chuyên Môn",
+    ho_ten: "Lê Thị Chuyên Môn",
     vai_tro: "CB_CHUYEN_MON", don_vi: "PHONG_NONG_NGHIEP", nhanh: "UBND",
-    linh_vuc_codes: ["NONG_NGHIEP", "XA_HOI"],  // R3: only these lĩnh vực
+    linh_vuc_codes: ["NONG_NGHIEP", "XA_HOI"],
   },
   {
     user_id: "USR_LANHDAO", password: "Test@1234",
-    ho_ten:  "Trần Thị Lãnh Đạo",
+    ho_ten: "Trần Thị Lãnh Đạo",
     vai_tro: "LANH_DAO", don_vi: "XA", nhanh: "UBND",
     linh_vuc_codes: null,
   },
@@ -49,42 +50,55 @@ const INDICATORS = [
     chi_so_id: "CS001", ten_chi_so: "Diện tích lúa",
     mo_ta: "Tổng diện tích canh tác lúa trong thôn",
     don_vi_do: "ha", kieu_du_lieu: "so", linh_vuc: "NONG_NGHIEP",
-    nhanh: "UBND",
-    validation: { required: true, min: 0, max: 10000 }, status: "ACTIVE",
+    nhanh: "UBND", validation: { required: true, min: 0, max: 10000 }, status: "ACTIVE",
   },
   {
     chi_so_id: "CS002", ten_chi_so: "Số hộ nghèo",
     mo_ta: "Số hộ được xếp loại nghèo trong thôn",
     don_vi_do: "hộ", kieu_du_lieu: "so", linh_vuc: "XA_HOI",
-    nhanh: "UBND",
-    validation: { required: true, min: 0, max: 1000 }, status: "ACTIVE",
+    nhanh: "UBND", validation: { required: true, min: 0, max: 1000 }, status: "ACTIVE",
   },
   {
     chi_so_id: "CS003", ten_chi_so: "Có đường bê tông",
     mo_ta: "Thôn có đường bê tông liên thôn không",
     don_vi_do: null, kieu_du_lieu: "boolean", linh_vuc: "CO_SO_HA_TANG",
-    nhanh: "UBND",
-    validation: { required: true }, status: "ACTIVE",
+    nhanh: "UBND", validation: { required: true }, status: "ACTIVE",
   },
   {
-    // DRAFT indicator — for approve test (T02 in test_indicators.js)
     chi_so_id: "CS_DRAFT01", ten_chi_so: "Số lượng ao cá",
     mo_ta: "Tổng số ao nuôi cá trong thôn",
     don_vi_do: "ao", kieu_du_lieu: "so", linh_vuc: "NONG_NGHIEP",
-    nhanh: "UBND",
-    validation: { required: true, min: 0, max: 500 }, status: "DRAFT",
+    nhanh: "UBND", validation: { required: true, min: 0, max: 500 }, status: "DRAFT",
   },
 ];
 
+// ── Helper: delete entire subcollection ──────────────────────
+async function deleteCollection(collRef) {
+  const snap = await collRef.get();
+  if (snap.empty) return 0;
+  const batch = db.batch();
+  snap.docs.forEach(d => batch.delete(d.ref));
+  await batch.commit();
+  return snap.size;
+}
+
 async function seed() {
   console.log("\n═══════════════════════════════════════");
-  console.log("  Seeding Firestore test data");
+  console.log("  Seeding Firestore test data  v2");
   console.log(`  Xã: ${XA_CODE}  |  Năm: ${YEAR}`);
   console.log("═══════════════════════════════════════\n");
 
-  const batch = db.batch();
-  const now   = Timestamp.now();
+  const now       = Timestamp.now();
   const expiresAt = Timestamp.fromDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+
+  // ── Step 0: Clear submissions (data sạch để demo) ──────────
+  console.log("🗑  Clearing old submissions...");
+  const deleted = await deleteCollection(
+    db.collection("communes").doc(XA_CODE).collection("submissions")
+  );
+  console.log(`   Deleted ${deleted} old submission(s)\n`);
+
+  const batch = db.batch();
 
   // ── xa_registry ────────────────────────────────────────────
   batch.set(db.collection("xa_registry").doc(XA_CODE), {
@@ -110,14 +124,13 @@ async function seed() {
       session_token: token, token_expires_at: expiresAt,
       status: "ACTIVE", last_login_at: now,
     });
-    console.log(`✅ users/${u.user_id}  (${u.vai_tro})  pw: ${u.password}`);
+    console.log(`✅ users/${u.user_id}  (${u.vai_tro})`);
   }
 
   // ── indicators ─────────────────────────────────────────────
   for (const ind of INDICATORS) {
     batch.set(
-      db.collection("communes").doc(XA_CODE)
-        .collection("indicators").doc(ind.chi_so_id),
+      db.collection("communes").doc(XA_CODE).collection("indicators").doc(ind.chi_so_id),
       {
         ...ind,
         created_by:  "USR_LANHDAO",
@@ -157,20 +170,63 @@ async function seed() {
 
   for (const r of requests) {
     batch.set(
-      db.collection("communes").doc(XA_CODE)
-        .collection("requests").doc(r.req_id),
+      db.collection("communes").doc(XA_CODE).collection("requests").doc(r.req_id),
       { ...r, manifest_version: manifestVersion, created_at: now, year: YEAR }
     );
   }
   console.log("✅ requests: REQ001 (OPEN), REQ002 (COMPLETED), REQ003 (OPEN/THON02 only)");
+
+  // ── submissions — trạng thái demo ──────────────────────────
+  // SUB001: THON01/REQ001 → PENDING_VERIFY  ← CB_CM + LANH_DAO thấy ngay
+  // SUB002: THON02/REQ001 → NEEDS_REVISION  ← test "cần sửa" flow
+  const submittedAt = Timestamp.fromDate(new Date(Date.now() - 2 * 60 * 60 * 1000)); // 2h ago
+
+  batch.set(
+    db.collection("communes").doc(XA_CODE).collection("submissions").doc("SUB001"),
+    {
+      submission_id: "SUB001",
+      req_id: "REQ001", thon_code: "THON01",
+      submitted_by: "USR_THON01",
+      submitted_at: submittedAt,
+      device_collected_at: submittedAt,
+      values: { CS001: 45.5, CS002: 12, CS003: true },
+      anh_urls: [],
+      status: "PENDING_VERIFY",
+      verified_by: null, verified_at: null,
+      rejection_reason: null,
+      indicator_reviews: {},
+      manifest_version_used: manifestVersion,
+      year: YEAR,
+    }
+  );
+
+  batch.set(
+    db.collection("communes").doc(XA_CODE).collection("submissions").doc("SUB002"),
+    {
+      submission_id: "SUB002",
+      req_id: "REQ001", thon_code: "THON02",
+      submitted_by: "USR_THON02",
+      submitted_at: Timestamp.fromDate(new Date(Date.now() - 24 * 60 * 60 * 1000)), // 1 day ago
+      device_collected_at: Timestamp.fromDate(new Date(Date.now() - 25 * 60 * 60 * 1000)),
+      values: { CS001: 30.0, CS002: 8, CS003: false },
+      anh_urls: [],
+      status: "NEEDS_REVISION",
+      verified_by: "USR_CBCM01",
+      verified_at: Timestamp.fromDate(new Date(Date.now() - 12 * 60 * 60 * 1000)),
+      rejection_reason: "Số liệu diện tích lúa có vẻ thấp bất thường, đề nghị kiểm tra lại.",
+      indicator_reviews: { CS001: { status: "rejected", comment: "Cần xác minh lại" } },
+      manifest_version_used: manifestVersion,
+      year: YEAR,
+    }
+  );
+  console.log("✅ submissions: SUB001 (THON01/PENDING_VERIFY), SUB002 (THON02/NEEDS_REVISION)");
 
   // ── manifest ───────────────────────────────────────────────
   const activeIndicators = INDICATORS.filter(i => i.status === "ACTIVE");
   const openRequests     = requests.filter(r => r.status === "OPEN");
 
   batch.set(
-    db.collection("communes").doc(XA_CODE)
-      .collection("manifests").doc("current"),
+    db.collection("communes").doc(XA_CODE).collection("manifests").doc("current"),
     {
       version: manifestVersion, generated_at: now,
       xa_code: XA_CODE, xa_name: "Xã Test", year: YEAR,
@@ -190,20 +246,24 @@ async function seed() {
   await batch.commit();
 
   console.log(`
-═══════════════════════════════════════
-  DONE. CONFIG cho test scripts:
-═══════════════════════════════════════
+═══════════════════════════════════════════════════════
+  DONE — Trạng thái demo sau seed:
+═══════════════════════════════════════════════════════
 
-  CB_THON  : USR_THON01  / Test@1234
-  CB_CM    : USR_CBCM01  / Test@1234  (linh_vuc: NONG_NGHIEP, XA_HOI)
-  LANH_DAO : USR_LANHDAO / Test@1234
+  CB_THON  (USR_THON01 / Test@1234):
+    → Thấy REQ001, has_submitted = TRUE (SUB001 tồn tại)
+    → Có thể resubmit nếu bị từ chối
 
-  OPEN_REQ_ID   : REQ001
-  CLOSED_REQ_ID : REQ002
-  PERM_REQ_ID   : REQ003
-  CHI_SO_IDS    : CS001, CS002, CS003
-  DRAFT_IND     : CS_DRAFT01  (dùng cho approve test)
-═══════════════════════════════════════
+  CB_CM  (USR_CBCM01 / Test@1234):
+    → pending_verifications: 2 items
+       • SUB001 THON01 → PENDING_VERIFY  (cần xét duyệt)
+       • SUB002 THON02 → NEEDS_REVISION  (đã từ chối, chờ CB_THON sửa)
+
+  LANH_DAO  (USR_LANHDAO / Test@1234):
+    → Cần duyệt: 2, tiến độ REQ001: 0/2 verified
+    → Có thể bypass verify SUB001 hoặc SUB002
+
+═══════════════════════════════════════════════════════
 `);
 }
 

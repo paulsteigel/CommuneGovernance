@@ -154,7 +154,6 @@ async function buildManifest(xa_code, year, user, client_version = null) {
             "PENDING_VERIFY",
             "IN_REVIEW",
             "NEEDS_REVISION",
-            "VERIFIED",
           ])
       );
 
@@ -185,6 +184,7 @@ async function buildManifest(xa_code, year, user, client_version = null) {
 
   // ── Read 2c (LANH_DAO): tất cả pending_verifications ─────
   // FIX BUG-B4: LANH_DAO cần nhận toàn bộ submissions không lọc linh_vuc
+  // Chỉ lấy statuses cần xử lý — không lấy VERIFIED (đã xong rồi)
   if (user.vai_tro === ROLES.LANH_DAO || user.vai_tro === ROLES.ADMIN) {
     const subs = await queryAll(
       paths.submissions(xa_code)
@@ -193,7 +193,6 @@ async function buildManifest(xa_code, year, user, client_version = null) {
           "PENDING_VERIFY",
           "IN_REVIEW",
           "NEEDS_REVISION",
-          "VERIFIED",
         ])
     );
 
