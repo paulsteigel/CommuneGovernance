@@ -4,23 +4,29 @@ const { db, paths, queryAll, serverTimestamp } = require("./firestore");
 const { ROLES, INDICATOR_STATUS, REQUEST_STATUS, QUOTA } = require("./constants");
 
 // ============================================================
-// MANIFEST UTILITIES
+// MANIFEST UTILITIES  v2
 //
-// Quota optimization baked in:
-//   1. Pre-computed manifest stored in manifests/current — 1 read
-//      instead of 3 collection reads on every login/pull.
-//   2. Conditional fetch: if client sends current_version and it
-//      matches, return { up_to_date: true } — 1 read instead of full.
-//   3. rebuildManifest() only triggered on actual data changes
-//      (create/approve indicator, create request).
+// Changes from v1:
+//   - CB_THON: manifest now includes full submission state per
+//     request (submission_id, submission_status, verify_comment,
+//     indicator_reviews, submitted_values) so CB_THON can see
+//     rejections and resubmit offline-first.
+//
+//   - CB_CM:
+//       pending_verifications = PENDING_VERIFY + IN_REVIEW  (actionable)
+//       waiting_revision      = NEEDS_REVISION              (informational)
+//
+//   - LANH_DAO / ADMIN:
+//       pending_verifications = PENDING_VERIFY only          (bypass-able)
+//       waiting_revision      = IN_REVIEW + NEEDS_REVISION   (informational)
+//
+//   - _mapSubmission helper centralized to avoid duplication.
 // ============================================================
 
 // ============================================================
 // PUBLIC: filterManifestForUser
-// Applies user-specific filtering to the pre-computed manifest.
-// No Firestore reads — pure in-memory filtering.
+// Pure in-memory filter — no Firestore reads.
 // ============================================================
-
 function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) {
   const { vai_tro, don_vi, linh_vuc_codes } = user;
 
@@ -28,13 +34,11 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
   let requests   = fullManifest.requests   || [];
 
   // ── Indicator filtering ──────────────────────────────────
-  if (vai_tro === ROLES.CB_THON) {
-    // CB_THON sees all active indicators (needed to understand form)
-  } else if (vai_tro === ROLES.CB_CHUYEN_MON) {
+  if (vai_tro === ROLES.CB_CHUYEN_MON) {
     const allowedLv = new Set(linh_vuc_codes || []);
     indicators = indicators.filter(i => allowedLv.has(i.linh_vuc));
   }
-  // LANH_DAO and ADMIN see all indicators
+  // LANH_DAO / ADMIN / CB_THON: see all active indicators
 
   // ── Request filtering ────────────────────────────────────
   if (vai_tro === ROLES.CB_THON) {
@@ -42,8 +46,13 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
       .filter(r => Array.isArray(r.danh_sach_thon) && r.danh_sach_thon.includes(don_vi))
       .map(r => ({
         ...r,
-        has_submitted: submittedReqIds.has(r.req_id),
-        submitted_at:  null,
+        has_submitted:     submittedReqIds.has(r.req_id),
+        // submission_id, submission_status etc. enriched in buildManifest
+        submission_id:     null,
+        submission_status: null,
+        verify_comment:    null,
+        indicator_reviews: null,
+        submitted_values:  null,
       }));
   } else if (vai_tro === ROLES.CB_CHUYEN_MON) {
     const allowedLv = new Set(linh_vuc_codes || []);
@@ -55,26 +64,23 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
       }))
     );
   }
-  // LANH_DAO and ADMIN see all requests
+  // LANH_DAO / ADMIN: see all requests
 
   return {
     manifest_version: fullManifest.version,
-    generated_at:     _toIso(fullManifest.generated_at),  // FIX: convert Timestamp
+    generated_at:     _toIso(fullManifest.generated_at),
     expires_at:       _expiresAt(fullManifest.generated_at),
-
     user: {
-      user_id:  user.user_id || user.id,
-      ho_ten:   user.ho_ten,
-      vai_tro:  user.vai_tro,
-      don_vi:   user.don_vi,
-      nhanh:    user.nhanh,
-      xa_code:  user.xa_code,
-      xa_name:  fullManifest.xa_name,
+      user_id: user.user_id || user.id,
+      ho_ten:  user.ho_ten,
+      vai_tro: user.vai_tro,
+      don_vi:  user.don_vi,
+      nhanh:   user.nhanh,
+      xa_code: user.xa_code,
+      xa_name: fullManifest.xa_name,
     },
-
     indicators,
     requests,
-
     config: {
       drive_folder_id: fullManifest.drive_folder_id,
       current_year:    fullManifest.year,
@@ -84,15 +90,13 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
 
 // ============================================================
 // PUBLIC: buildManifest
-// Reads Firestore and returns a filtered manifest for this user.
 //
 // Quota:
-//   CB_THON:       2 reads (manifest + submissions for has_submitted)
-//   CB_CHUYEN_MON: 2 reads (manifest + submissions for pending_verifications)
-//   LANH_DAO:      2 reads (manifest + all submissions)
+//   CB_THON:       2 reads (manifest + own submissions)
+//   CB_CM:         2 reads (manifest + pending subs)
+//   LANH_DAO:      2 reads (manifest + pending subs)
 //   Others:        1 read  (manifest only)
 // ============================================================
-
 async function buildManifest(xa_code, year, user, client_version = null) {
   // Read 1: pre-computed manifest
   const manifestSnap = await paths.manifest(xa_code).get();
@@ -115,22 +119,45 @@ async function buildManifest(xa_code, year, user, client_version = null) {
     return { up_to_date: true, manifest_version: fullManifest.version };
   }
 
-  // ── Read 2a (CB_THON): has_submitted flags ───────────────
+  // ── Read 2a (CB_THON): full submissions for status enrichment ─
   let submittedReqIds = new Set();
+  let subByReq = {};
+
   if (user.vai_tro === ROLES.CB_THON) {
     const subs = await queryAll(
       paths.submissions(xa_code)
         .where("thon_code", "==", user.don_vi)
         .where("year", "==", effectiveYear)
-        .select("req_id")
     );
-    submittedReqIds = new Set(subs.map(s => s.req_id));
+    for (const s of subs) {
+      subByReq[s.req_id] = s;
+    }
+    submittedReqIds = new Set(Object.keys(subByReq));
   }
 
   const filtered = filterManifestForUser(fullManifest, user, submittedReqIds);
 
-  // ── Read 2b (CB_CM): pending_verifications ───────────────
-  // FIX BUG-B2 + BUG-B5: convert Timestamp fields sang ISO string
+  // ── Enrich CB_THON requests with submission state ────────
+  // CB_THON now knows: submission_status, rejection reason,
+  // indicator_reviews, and old values to pre-fill resubmit form.
+  if (user.vai_tro === ROLES.CB_THON) {
+    filtered.requests = filtered.requests.map(r => {
+      const sub = subByReq[r.req_id];
+      if (!sub) return r;
+      return {
+        ...r,
+        submission_id:     sub.submission_id || sub.id,
+        submission_status: sub.status || null,
+        verify_comment:    sub.verify_comment || null,
+        indicator_reviews: sub.indicator_reviews || null,
+        submitted_values:  sub.values || null,
+      };
+    });
+  }
+
+  // ── Read 2b (CB_CM): single query, split in memory ───────
+  //   pending_verifications = PENDING_VERIFY + IN_REVIEW  (actionable)
+  //   waiting_revision      = NEEDS_REVISION              (informational only)
   if (user.vai_tro === ROLES.CB_CHUYEN_MON) {
     const allowedLv = new Set(user.linh_vuc_codes || []);
 
@@ -147,73 +174,44 @@ async function buildManifest(xa_code, year, user, client_version = null) {
     );
 
     if (relevantReqIds.size > 0) {
-      const subs = await queryAll(
+      const allSubs = await queryAll(
         paths.submissions(xa_code)
           .where("year", "==", effectiveYear)
-          .where("status", "in", [
-            "PENDING_VERIFY",
-            "IN_REVIEW",
-            "NEEDS_REVISION",
-          ])
+          .where("status", "in", ["PENDING_VERIFY", "IN_REVIEW", "NEEDS_REVISION"])
       );
 
-      filtered.pending_verifications = subs
-        .filter(s => relevantReqIds.has(s.req_id))
-        .map(s => {
-          const req = (fullManifest.requests || []).find(
-            r => (r.req_id || r.id) === s.req_id
-          );
-          return {
-            submission_id: s.submission_id || s.id,
-            req_id:        s.req_id,
-            thon_code:     s.thon_code,
-            status:        s.status,
-            submitted_by:  s.submitted_by,
-            submitted_at:  _toIso(s.submitted_at),          // FIX BUG-B5
-            verified_at:   _toIso(s.verified_at),            // FIX BUG-B5
-            device_collected_at: _toIso(s.device_collected_at), // FIX BUG-B5
-            values:        s.values || {},
-            tieu_de:       req?.tieu_de || s.req_id,
-            deadline:      _toIso(req?.deadline) || req?.deadline || null, // FIX BUG-B5
-          };
-        });
+      const relevant = allSubs.filter(s => relevantReqIds.has(s.req_id));
+
+      filtered.pending_verifications = relevant
+        .filter(s => s.status === "PENDING_VERIFY" || s.status === "IN_REVIEW")
+        .map(s => _mapSubmission(s, fullManifest.requests));
+
+      filtered.waiting_revision = relevant
+        .filter(s => s.status === "NEEDS_REVISION")
+        .map(s => _mapSubmission(s, fullManifest.requests));
     } else {
       filtered.pending_verifications = [];
+      filtered.waiting_revision = [];
     }
   }
 
-  // ── Read 2c (LANH_DAO): tất cả pending_verifications ─────
-  // FIX BUG-B4: LANH_DAO cần nhận toàn bộ submissions không lọc linh_vuc
-  // Chỉ lấy statuses cần xử lý — không lấy VERIFIED (đã xong rồi)
+  // ── Read 2c (LANH_DAO / ADMIN): single query, split in memory ─
+  //   pending_verifications = PENDING_VERIFY only          (bypass-able)
+  //   waiting_revision      = IN_REVIEW + NEEDS_REVISION   (informational only)
   if (user.vai_tro === ROLES.LANH_DAO || user.vai_tro === ROLES.ADMIN) {
-    const subs = await queryAll(
+    const allSubs = await queryAll(
       paths.submissions(xa_code)
         .where("year", "==", effectiveYear)
-        .where("status", "in", [
-          "PENDING_VERIFY",
-          "IN_REVIEW",
-          "NEEDS_REVISION",
-        ])
+        .where("status", "in", ["PENDING_VERIFY", "IN_REVIEW", "NEEDS_REVISION"])
     );
 
-    filtered.pending_verifications = subs.map(s => {
-      const req = (fullManifest.requests || []).find(
-        r => (r.req_id || r.id) === s.req_id
-      );
-      return {
-        submission_id: s.submission_id || s.id,
-        req_id:        s.req_id,
-        thon_code:     s.thon_code,
-        status:        s.status,
-        submitted_by:  s.submitted_by,
-        submitted_at:  _toIso(s.submitted_at),               // FIX BUG-B5
-        verified_at:   _toIso(s.verified_at),                 // FIX BUG-B5
-        device_collected_at: _toIso(s.device_collected_at),  // FIX BUG-B5
-        values:        s.values || {},
-        tieu_de:       req?.tieu_de || s.req_id,
-        deadline:      _toIso(req?.deadline) || req?.deadline || null, // FIX BUG-B5
-      };
-    });
+    filtered.pending_verifications = allSubs
+      .filter(s => s.status === "PENDING_VERIFY")
+      .map(s => _mapSubmission(s, fullManifest.requests));
+
+    filtered.waiting_revision = allSubs
+      .filter(s => s.status === "IN_REVIEW" || s.status === "NEEDS_REVISION")
+      .map(s => _mapSubmission(s, fullManifest.requests));
   }
 
   return filtered;
@@ -221,10 +219,7 @@ async function buildManifest(xa_code, year, user, client_version = null) {
 
 // ============================================================
 // PUBLIC: rebuildManifest
-// Reads all ACTIVE indicators + OPEN requests, writes to
-// manifests/current. Called after every indicator/request change.
 // ============================================================
-
 async function rebuildManifest(xa_code, year) {
   const [indicators, requests, xaSnap] = await Promise.all([
     queryAll(
@@ -261,8 +256,6 @@ async function rebuildManifest(xa_code, year) {
       validation:   i.validation || {},
     })),
 
-    // FIX BUG-B1: normalize chi_so_ids + danh_sach_thon thành array
-    // FIX BUG-B5: deadline có thể là Timestamp → convert
     requests: requests.map(r => ({
       req_id:         r.req_id || r.id,
       tieu_de:        r.tieu_de,
@@ -284,15 +277,29 @@ async function rebuildManifest(xa_code, year) {
 // ============================================================
 
 /**
- * Convert bất kỳ Timestamp value nào sang ISO string.
- * Handles: null/undefined, ISO string (passthrough),
- *          Firestore Timestamp object { _seconds, _nanoseconds },
- *          Firestore Timestamp với .toDate() method.
- *
- * FIX BUG-B5: đây là root cause của crash CB_CM.
- * submitted_at?.slice(0, 10) crash vì object {} không có .slice().
- * ?. chỉ guard null/undefined — {} là truthy nên không short-circuit.
+ * Map a Firestore submission doc to the manifest response shape.
+ * Used by CB_CM and LANH_DAO sections.
  */
+function _mapSubmission(s, requests) {
+  const req = (requests || []).find(r => (r.req_id || r.id) === s.req_id);
+  return {
+    submission_id:       s.submission_id || s.id,
+    req_id:              s.req_id,
+    thon_code:           s.thon_code,
+    status:              s.status,
+    submitted_by:        s.submitted_by,
+    submitted_at:        _toIso(s.submitted_at),
+    verified_at:         _toIso(s.verified_at),
+    device_collected_at: _toIso(s.device_collected_at),
+    values:              s.values || {},
+    verify_comment:      s.verify_comment || null,
+    indicator_reviews:   s.indicator_reviews || null,
+    tieu_de:             req?.tieu_de || s.req_id,
+    deadline:            _toIso(req?.deadline) || req?.deadline || null,
+  };
+}
+
+/** Convert any Timestamp to ISO string. */
 function _toIso(ts) {
   if (!ts) return null;
   if (typeof ts === "string") return ts;
@@ -301,10 +308,7 @@ function _toIso(ts) {
   return null;
 }
 
-/**
- * Normalize a value to array.
- * Handles: already array, space-separated string, undefined/null.
- */
+/** Normalize to array. */
 function _toArray(val) {
   if (Array.isArray(val)) return val;
   if (!val) return [];
@@ -318,8 +322,4 @@ function _expiresAt(generatedAt) {
   return d.toISOString();
 }
 
-module.exports = {
-  buildManifest,
-  rebuildManifest,
-  filterManifestForUser,
-};
+module.exports = { buildManifest, rebuildManifest, filterManifestForUser };

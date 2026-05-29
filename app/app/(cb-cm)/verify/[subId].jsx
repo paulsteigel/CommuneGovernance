@@ -1,7 +1,7 @@
 // app/(cb-cm)/verify/[subId].jsx
-// CB_CHUYEN_MON — Xét duyệt submission.
-// Batch mode:        2 nút Xác nhận / Từ chối + comment
-// Per-indicator mode: bảng checkbox toggle-all + comment
+// CB_CHUYEN_MON — Xét duyệt submission (PENDING_VERIFY hoặc IN_REVIEW).
+// Batch mode:         Xác nhận / Từ chối + ghi chú
+// Per-indicator mode: checkbox toggle từng chỉ tiêu + ghi chú
 
 import React, { useState, useMemo, useCallback } from "react";
 import {
@@ -32,43 +32,40 @@ export default function VerifyScreen() {
     [manifest, submission]
   );
 
-  // FIX BUG-A3: dùng chi_so_id
   const indicatorMap = useMemo(() => {
     const map = {};
+    // FIX BUG-A3: use chi_so_id (not ind.id)
     (manifest?.indicators || []).forEach(ind => { map[ind.chi_so_id] = ind; });
     return map;
   }, [manifest]);
 
   const chiSoIds = request?.chi_so_ids || [];
 
-  const [mode,     setMode]    = useState("batch");
-  const [decision, setDecision] = useState(null); // batch: "confirm" | "reject"
+  const [mode,     setMode]     = useState("batch");
+  const [decision, setDecision] = useState(null);
   const [comment,  setComment]  = useState("");
   const [loading,  setLoading]  = useState(false);
 
-  // Per-indicator: true = confirmed, false = rejected
   const [checked, setChecked] = useState(() => {
     const init = {};
-    chiSoIds.forEach(id => { init[id] = true; }); // mặc định: tất cả confirmed
+    chiSoIds.forEach(id => { init[id] = true; });
     return init;
   });
 
-  // Derived: trạng thái check-all
   const allChecked  = chiSoIds.length > 0 && chiSoIds.every(id => checked[id]);
   const someChecked = chiSoIds.some(id => checked[id]);
 
   const toggleAll = useCallback(() => {
     const next = !allChecked;
-    const updated = {};
-    chiSoIds.forEach(id => { updated[id] = next; });
-    setChecked(updated);
+    const upd  = {};
+    chiSoIds.forEach(id => { upd[id] = next; });
+    setChecked(upd);
   }, [allChecked, chiSoIds]);
 
   const toggleOne = useCallback((id) => {
     setChecked(prev => ({ ...prev, [id]: !prev[id] }));
   }, []);
 
-  // Build indicator_reviews từ checkbox state
   function buildIndReviews() {
     const reviews = {};
     chiSoIds.forEach(id => {
@@ -102,9 +99,10 @@ export default function VerifyScreen() {
         xa_code,
         submission_id:     subId,
         verify_mode:       mode,
-        decision:          mode === "batch" ? decision : "confirm",
+        decision:          mode === "batch" ? decision : undefined,
         indicator_reviews: mode === "per_indicator" ? buildIndReviews() : undefined,
-        verify_comment:    comment.trim() || undefined,
+        // FIX A6: send "comment" (canonical name), not "verify_comment"
+        comment:           comment.trim() || undefined,
       });
 
       Alert.alert("Xét duyệt thành công ✓", "Đã lưu kết quả.", [
@@ -120,9 +118,11 @@ export default function VerifyScreen() {
   if (!submission) {
     return (
       <SafeAreaView style={styles.safe}>
+        <Stack.Screen options={{ title: "Xét duyệt số liệu" }} />
         <View style={styles.center}>
           <Ionicons name="alert-circle-outline" size={48} color={COLORS.danger} />
           <Text style={styles.errorText}>Không tìm thấy bản ghi</Text>
+          <Text style={styles.errorSub}>{subId}</Text>
         </View>
       </SafeAreaView>
     );
@@ -136,7 +136,7 @@ export default function VerifyScreen() {
 
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
 
-          {/* ── Info card ── */}
+          {/* Info card */}
           <View style={styles.infoCard}>
             {[
               { label: "Yêu cầu",   value: submission.tieu_de || submission.req_id },
@@ -155,7 +155,7 @@ export default function VerifyScreen() {
             </View>
           </View>
 
-          {/* ── Mode toggle ── */}
+          {/* Mode toggle */}
           <View style={styles.modeRow}>
             {[
               { key: "batch",         label: "Theo bộ số liệu", icon: "checkmark-done" },
@@ -166,19 +166,13 @@ export default function VerifyScreen() {
                 style={[styles.modeBtn, mode === m.key && styles.modeBtnActive]}
                 onPress={() => setMode(m.key)}
               >
-                <Ionicons
-                  name={m.icon}
-                  size={16}
-                  color={mode === m.key ? COLORS.white : COLORS.textSecondary}
-                />
-                <Text style={[styles.modeBtnText, mode === m.key && styles.modeBtnTextActive]}>
-                  {m.label}
-                </Text>
+                <Ionicons name={m.icon} size={16} color={mode === m.key ? COLORS.white : COLORS.textSecondary} />
+                <Text style={[styles.modeBtnText, mode === m.key && styles.modeBtnTextActive]}>{m.label}</Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          {/* ── BATCH MODE: 2 nút ── */}
+          {/* BATCH MODE */}
           {mode === "batch" && (
             <>
               <Text style={styles.sectionTitle}>Quyết định</Text>
@@ -189,10 +183,8 @@ export default function VerifyScreen() {
                 ].map(d => (
                   <TouchableOpacity
                     key={d.key}
-                    style={[
-                      styles.decisionBtn,
-                      { borderColor: d.color, backgroundColor: decision === d.key ? d.color : d.bg },
-                    ]}
+                    style={[styles.decisionBtn,
+                      { borderColor: d.color, backgroundColor: decision === d.key ? d.color : d.bg }]}
                     onPress={() => setDecision(d.key)}
                     activeOpacity={0.8}
                   >
@@ -205,17 +197,15 @@ export default function VerifyScreen() {
             </>
           )}
 
-          {/* ── PER-INDICATOR MODE: bảng checkbox ── */}
+          {/* PER-INDICATOR MODE */}
           {mode === "per_indicator" && (
             <>
               <Text style={styles.sectionTitle}>Chọn chỉ tiêu đạt chuẩn</Text>
               <View style={styles.table}>
-
-                {/* Header + toggle all */}
                 <TouchableOpacity style={styles.tableHeader} onPress={toggleAll} activeOpacity={0.7}>
                   <Text style={styles.tableHeaderText}>Chỉ tiêu</Text>
-                  <Text style={[styles.tableHeaderText, styles.tableColValue]}>Giá trị</Text>
-                  <View style={styles.tableColCheck}>
+                  <Text style={[styles.tableHeaderText, styles.colValue]}>Giá trị</Text>
+                  <View style={styles.colCheck}>
                     <Ionicons
                       name={allChecked ? "checkbox" : someChecked ? "remove-circle" : "square-outline"}
                       size={22}
@@ -224,38 +214,30 @@ export default function VerifyScreen() {
                     <Text style={styles.toggleAllLabel}>Tất cả</Text>
                   </View>
                 </TouchableOpacity>
-
                 <View style={styles.tableDivider} />
-
-                {/* Data rows */}
                 {chiSoIds.map((id, idx) => {
-                  const ind     = indicatorMap[id];
-                  const val     = submission.values?.[id];
-                  const isLast  = idx === chiSoIds.length - 1;
-                  const isCheck = checked[id];
+                  const ind    = indicatorMap[id];
+                  const val    = submission.values?.[id];
+                  const isLast = idx === chiSoIds.length - 1;
                   return (
                     <View key={id}>
-                      <TouchableOpacity
-                        style={styles.tableRow}
-                        onPress={() => toggleOne(id)}
-                        activeOpacity={0.6}
-                      >
-                        <View style={styles.tableColName}>
-                          <Text style={styles.indName} numberOfLines={2}>
-                            {ind?.ten_chi_so || id}
-                          </Text>
+                      <TouchableOpacity style={styles.tableRow} onPress={() => toggleOne(id)} activeOpacity={0.6}>
+                        <View style={styles.colName}>
+                          <Text style={styles.indName} numberOfLines={2}>{ind?.ten_chi_so || id}</Text>
                           <Text style={styles.indId}>{id}</Text>
                         </View>
-                        <Text style={styles.tableColValue}>
+                        <Text style={styles.colValue}>
                           {val !== undefined
-                            ? `${val}${ind?.don_vi_do ? " " + ind.don_vi_do : ""}`
+                            ? typeof val === "boolean"
+                              ? (val ? "Có" : "Không")
+                              : `${val}${ind?.don_vi_do ? " " + ind.don_vi_do : ""}`
                             : "—"}
                         </Text>
-                        <View style={[styles.tableColCheck, { justifyContent: "center" }]}>
+                        <View style={[styles.colCheck, { justifyContent: "center" }]}>
                           <Ionicons
-                            name={isCheck ? "checkbox" : "square-outline"}
+                            name={checked[id] ? "checkbox" : "square-outline"}
                             size={24}
-                            color={isCheck ? COLORS.primary : COLORS.textHint}
+                            color={checked[id] ? COLORS.primary : COLORS.textHint}
                           />
                         </View>
                       </TouchableOpacity>
@@ -263,15 +245,14 @@ export default function VerifyScreen() {
                     </View>
                   );
                 })}
-
-                {/* Summary footer */}
                 <View style={styles.tableDivider} />
                 <View style={styles.tableFooter}>
                   <Text style={styles.tableFooterText}>
-                    Xác nhận: <Text style={{ color: COLORS.primary, fontWeight: "700" }}>
+                    Xác nhận:{" "}
+                    <Text style={{ color: COLORS.primary, fontWeight: "700" }}>
                       {chiSoIds.filter(id => checked[id]).length}
                     </Text>
-                    {" / "}{chiSoIds.length} chỉ tiêu
+                    {" / "}{chiSoIds.length}
                   </Text>
                   {chiSoIds.filter(id => !checked[id]).length > 0 && (
                     <Text style={styles.tableFooterReject}>
@@ -283,12 +264,12 @@ export default function VerifyScreen() {
             </>
           )}
 
-          {/* ── Comment chung (cả 2 mode) ── */}
+          {/* Comment */}
           <Text style={styles.sectionTitle}>Ghi chú xét duyệt (tùy chọn)</Text>
           <View style={styles.commentWrap}>
             <TextInput
               style={styles.commentInput}
-              placeholder="Nhập nhận xét của cán bộ chuyên môn..."
+              placeholder="Nhận xét của cán bộ chuyên môn..."
               placeholderTextColor={COLORS.textHint}
               value={comment}
               onChangeText={setComment}
@@ -298,7 +279,7 @@ export default function VerifyScreen() {
             />
           </View>
 
-          {/* ── Submit ── */}
+          {/* Submit */}
           <TouchableOpacity
             style={[styles.submitBtn, (mode === "batch" && !decision) && styles.submitBtnDisabled]}
             onPress={handleSubmit}
@@ -318,70 +299,40 @@ export default function VerifyScreen() {
 const styles = StyleSheet.create({
   safe:   { flex: 1, backgroundColor: COLORS.background },
   scroll: { padding: SPACING.md, paddingBottom: SPACING.xxl },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", gap: SPACING.md },
+  center: { flex: 1, justifyContent: "center", alignItems: "center", gap: SPACING.sm, padding: SPACING.xl },
   errorText: { ...TYPOGRAPHY.bodyLarge, color: COLORS.danger },
-
-  infoCard: {
-    backgroundColor: COLORS.white, borderRadius: RADIUS.lg,
-    padding: SPACING.lg, marginBottom: SPACING.lg, ...SHADOW.card, gap: SPACING.sm,
-  },
+  errorSub:  { ...TYPOGRAPHY.caption, color: COLORS.textHint },
+  infoCard:  { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.lg, marginBottom: SPACING.lg, ...SHADOW.card, gap: SPACING.sm },
   infoRow:   { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   infoLabel: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
   infoValue: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textPrimary, fontWeight: "600", flex: 1, textAlign: "right" },
-
   sectionTitle: { ...TYPOGRAPHY.titleMedium, color: COLORS.textPrimary, marginBottom: SPACING.sm, marginTop: SPACING.md },
-
-  // Mode toggle
   modeRow:          { flexDirection: "row", gap: SPACING.sm, marginBottom: SPACING.sm },
   modeBtn:          { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: SPACING.xs, borderWidth: 1.5, borderColor: COLORS.border, borderRadius: RADIUS.md, paddingVertical: SPACING.md, backgroundColor: COLORS.white },
   modeBtnActive:    { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   modeBtnText:      { ...TYPOGRAPHY.labelMedium, color: COLORS.textSecondary },
   modeBtnTextActive:{ color: COLORS.white },
-
-  // Batch decisions
-  decisionRow: { flexDirection: "row", gap: SPACING.md, marginBottom: SPACING.md },
-  decisionBtn: { flex: 1, borderWidth: 2, borderRadius: RADIUS.md, paddingVertical: SPACING.lg, alignItems: "center" },
+  decisionRow:  { flexDirection: "row", gap: SPACING.md, marginBottom: SPACING.md },
+  decisionBtn:  { flex: 1, borderWidth: 2, borderRadius: RADIUS.md, paddingVertical: SPACING.lg, alignItems: "center" },
   decisionText: { ...TYPOGRAPHY.titleMedium, textAlign: "center" },
-
-  // Table
-  table: {
-    backgroundColor: COLORS.white, borderRadius: RADIUS.lg,
-    marginBottom: SPACING.md, ...SHADOW.card, overflow: "hidden",
-  },
-  tableHeader: {
-    flexDirection: "row", alignItems: "center",
-    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
-    backgroundColor: COLORS.primaryPale,
-  },
-  tableHeaderText:  { ...TYPOGRAPHY.labelMedium, color: COLORS.primary, flex: 1 },
-  tableColName:     { flex: 1, paddingRight: SPACING.sm },
-  tableColValue:    { width: 80, textAlign: "right", ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
-  tableColCheck:    { width: 56, alignItems: "center", flexDirection: "column" },
-  toggleAllLabel:   { ...TYPOGRAPHY.caption, color: COLORS.primary, marginTop: 2 },
-  tableDivider:     { height: 1, backgroundColor: COLORS.divider },
-  tableRow:         { flexDirection: "row", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.md },
-  rowDivider:       { height: 1, backgroundColor: COLORS.background, marginHorizontal: SPACING.md },
-  indName:          { ...TYPOGRAPHY.bodyMedium, color: COLORS.textPrimary, fontWeight: "600" },
-  indId:            { ...TYPOGRAPHY.caption, color: COLORS.textHint, marginTop: 2 },
-  tableFooter:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.background },
-  tableFooterText:  { ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
-  tableFooterReject:{ ...TYPOGRAPHY.bodyMedium, color: COLORS.danger },
-
-  // Comment
-  commentWrap: {
-    backgroundColor: COLORS.white, borderRadius: RADIUS.md,
-    borderWidth: 1.5, borderColor: COLORS.border,
-    padding: SPACING.md, marginBottom: SPACING.md, minHeight: 100,
-  },
+  table:           { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, marginBottom: SPACING.md, ...SHADOW.card, overflow: "hidden" },
+  tableHeader:     { flexDirection: "row", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.primaryPale },
+  tableHeaderText: { ...TYPOGRAPHY.labelMedium, color: COLORS.primary, flex: 1 },
+  colName:         { flex: 1, paddingRight: SPACING.sm },
+  colValue:        { width: 80, textAlign: "right", ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
+  colCheck:        { width: 56, alignItems: "center", flexDirection: "column" },
+  toggleAllLabel:  { ...TYPOGRAPHY.caption, color: COLORS.primary, marginTop: 2 },
+  tableDivider:    { height: 1, backgroundColor: COLORS.divider },
+  tableRow:        { flexDirection: "row", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.md },
+  rowDivider:      { height: 1, backgroundColor: COLORS.background, marginHorizontal: SPACING.md },
+  indName:         { ...TYPOGRAPHY.bodyMedium, color: COLORS.textPrimary, fontWeight: "600" },
+  indId:           { ...TYPOGRAPHY.caption, color: COLORS.textHint, marginTop: 2 },
+  tableFooter:     { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.background },
+  tableFooterText: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
+  tableFooterReject: { ...TYPOGRAPHY.bodyMedium, color: COLORS.danger },
+  commentWrap:  { backgroundColor: COLORS.white, borderRadius: RADIUS.md, borderWidth: 1.5, borderColor: COLORS.border, padding: SPACING.md, marginBottom: SPACING.md, minHeight: 100 },
   commentInput: { ...TYPOGRAPHY.bodyLarge, color: COLORS.textPrimary, minHeight: 80 },
-
-  // Submit
-  submitBtn: {
-    flexDirection: "row", backgroundColor: COLORS.primaryLight,
-    borderRadius: RADIUS.md, height: TOUCH_TARGET + 8,
-    justifyContent: "center", alignItems: "center",
-    gap: SPACING.sm, ...SHADOW.elevated,
-  },
+  submitBtn:         { flexDirection: "row", backgroundColor: COLORS.primaryLight || COLORS.primary, borderRadius: RADIUS.md, height: TOUCH_TARGET + 8, justifyContent: "center", alignItems: "center", gap: SPACING.sm, ...SHADOW.elevated },
   submitBtnDisabled: { backgroundColor: COLORS.textHint },
   submitBtnText:     { ...TYPOGRAPHY.titleMedium, color: COLORS.white },
 });

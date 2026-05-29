@@ -115,6 +115,20 @@ export async function pushData({ token, user_id, xa_code, year, manifest_version
   return unwrap(result, "Gửi số liệu thất bại");
 }
 
+//
+// POST /resubmit_data
+// CB_THON gửi lại submission sau khi bị NEEDS_REVISION.
+//
+export async function resubmitData({ token, user_id, xa_code, submission_id, updated_values }) {
+  return post("/resubmit_data", {
+    token,
+    user_id,
+    xa_code,
+    submission_id,
+    updated_values,
+  });
+}
+
 /**
  * Gửi lại số liệu đã bị yêu cầu chỉnh sửa
  */

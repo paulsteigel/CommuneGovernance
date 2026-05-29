@@ -1,7 +1,8 @@
 // app/(lanh-dao)/index.jsx
-// LANH_DAO dashboard — 2 sections:
-//   1. "Cần xử lý"  — pending_verifications từ manifest (offline-capable)
-//   2. "Tiến độ"    — request progress từ /dashboard API
+// LANH_DAO dashboard — 3 sections:
+//   1. "Cần bypass"    — pending_verifications (PENDING_VERIFY) → tappable, LANH_DAO verify
+//   2. "Đang xử lý"   — waiting_revision (IN_REVIEW + NEEDS_REVISION) → informational only
+//   3. "Tiến độ"      — request progress từ /dashboard API
 
 import React, { useState, useEffect, useCallback } from "react";
 import {
@@ -19,9 +20,6 @@ import LoadingOverlay from "../../components/LoadingOverlay";
 import OfflineBanner from "../../components/OfflineBanner";
 import { COLORS, TYPOGRAPHY, SPACING, RADIUS, SHADOW } from "../../constants/theme";
 
-// Statuses cần LANH_DAO xử lý (không tính VERIFIED)
-const ACTIONABLE = new Set(["PENDING_VERIFY", "IN_REVIEW", "NEEDS_REVISION"]);
-
 export default function LanhDaoDashboard() {
   const { user, xa_code, year, token, manifest } = useAuthStore();
   const updateManifest = useAuthStore(s => s.updateManifest);
@@ -32,20 +30,18 @@ export default function LanhDaoDashboard() {
   const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isOffline,  setIsOffline]  = useState(false);
-  const [error,      setError]      = useState(null);
 
-  // ── Pending verifications từ manifest (offline) ──────────
-  const pendingVerifs = (manifest?.pending_verifications || [])
-    .filter(s => ACTIONABLE.has(s.status));
+  // PENDING_VERIFY only → LANH_DAO có thể bypass verify
+  const bypassItems   = manifest?.pending_verifications || [];
+  // IN_REVIEW + NEEDS_REVISION → informational only
+  const waitingItems  = manifest?.waiting_revision || [];
 
-  // ── Dashboard fetch (requires network) ──────────────────
   async function fetchDashboard() {
     try {
       const data = await getDashboard({ token, user_id: user.user_id, xa_code, year });
       setDashboard(data);
-      setError(null);
     } catch (e) {
-      setError(e.message);
+      console.warn("Dashboard error:", e.message);
     }
   }
 
@@ -69,29 +65,12 @@ export default function LanhDaoDashboard() {
     setRefreshing(false);
   }, [token, user, xa_code, year, manifest]);
 
-  // ── SectionList data ─────────────────────────────────────
-  const sections = [
-    {
-      key:   "action",
-      title: `Cần xử lý (${pendingVerifs.length})`,
-      data:  pendingVerifs,
-      empty: "Không có bản ghi cần xử lý",
-    },
-    {
-      key:   "progress",
-      title: `Tiến độ · ${dashboard?.requests?.length || 0} yêu cầu`,
-      data:  dashboard?.requests || [],
-      empty: "Chưa có yêu cầu nào",
-    },
-  ];
-
-  // ── Render: pending verification card ───────────────────
-  function renderPending({ item }) {
+  // ── Render: bypass card (tappable) ───────────────────────
+  function renderBypass({ item }) {
     const date = item.submitted_at?.slice(0, 10) || "—";
-    const isRevision = item.status === "NEEDS_REVISION";
     return (
       <TouchableOpacity
-        style={[styles.card, isRevision && styles.cardRevision]}
+        style={styles.bypassCard}
         onPress={() => router.push({
           pathname: "/(lanh-dao)/verify/[subId]",
           params:   { subId: item.submission_id },
@@ -100,16 +79,18 @@ export default function LanhDaoDashboard() {
       >
         <View style={styles.cardTop}>
           <Text style={styles.thonLabel}>Thôn {item.thon_code}</Text>
-          <StatusBadge status={item.status} size="small" />
+          <View style={styles.bypassBadge}>
+            <Text style={styles.bypassBadgeText}>Chưa được duyệt</Text>
+          </View>
         </View>
         <Text style={styles.reqTitle} numberOfLines={1}>{item.tieu_de || item.req_id}</Text>
         <View style={styles.cardMeta}>
           <View style={styles.metaRow}>
-            <Ionicons name="person-outline" size={14} color={COLORS.textSecondary} />
+            <Ionicons name="person-outline" size={13} color={COLORS.textSecondary} />
             <Text style={styles.metaText}>{item.submitted_by}</Text>
           </View>
           <View style={styles.metaRow}>
-            <Ionicons name="time-outline" size={14} color={COLORS.textSecondary} />
+            <Ionicons name="time-outline" size={13} color={COLORS.textSecondary} />
             <Text style={styles.metaText}>{date}</Text>
           </View>
           <Ionicons name="arrow-forward-circle-outline" size={20} color={COLORS.accent} />
@@ -118,13 +99,37 @@ export default function LanhDaoDashboard() {
     );
   }
 
-  // ── Render: request progress card ───────────────────────
-  function renderRequest({ item }) {
-    const pct      = item.completion_pct || 0;
-    const barColor = pct === 100 ? COLORS.verified : pct > 50 ? COLORS.accentLight : COLORS.accent;
+  // ── Render: waiting card (read-only) ─────────────────────
+  function renderWaiting({ item }) {
+    const date      = item.submitted_at?.slice(0, 10) || "—";
+    const isRevision = item.status === "NEEDS_REVISION";
     return (
-      <View style={[styles.reqCard, item.overdue && styles.reqCardOverdue]}>
-        <View style={styles.reqTop}>
+      <View style={[styles.waitingCard, isRevision && styles.waitingCardRevision]}>
+        <View style={styles.cardTop}>
+          <Text style={styles.thonLabel}>Thôn {item.thon_code}</Text>
+          <StatusBadge status={item.status} size="small" />
+        </View>
+        <Text style={styles.reqTitle} numberOfLines={1}>{item.tieu_de || item.req_id}</Text>
+        <Text style={styles.waitingHint}>
+          {isRevision
+            ? "CB_THON cần gửi lại sau khi sửa"
+            : "Cán bộ chuyên môn đang xem xét"}
+        </Text>
+        <View style={styles.metaRow}>
+          <Ionicons name="time-outline" size={13} color={COLORS.textSecondary} />
+          <Text style={styles.metaText}>{date}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // ── Render: request progress card ────────────────────────
+  function renderProgress({ item }) {
+    const pct      = item.completion_pct || 0;
+    const barColor = pct === 100 ? COLORS.primary : pct > 50 ? "#F59E0B" : COLORS.accent;
+    return (
+      <View style={[styles.progressCard, item.overdue && styles.progressCardOverdue]}>
+        <View style={styles.progressTop}>
           <Text style={styles.reqTitle} numberOfLines={2}>{item.tieu_de}</Text>
           <StatusBadge status={item.req_status} size="small" />
         </View>
@@ -132,14 +137,14 @@ export default function LanhDaoDashboard() {
           <View style={styles.progressBg}>
             <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: barColor }]} />
           </View>
-          <Text style={styles.progressText}>{pct}%</Text>
+          <Text style={styles.progressPct}>{pct}%</Text>
         </View>
         <View style={styles.statsRow}>
           {[
-            { num: item.total_thon,     label: "Tổng thôn",  color: COLORS.textPrimary },
-            { num: item.submitted_thon, label: "Đã nộp",     color: COLORS.accent },
-            { num: item.verified_thon,  label: "Đã duyệt",   color: COLORS.primary },
-            { num: item.needs_attention,label: "Cần chú ý",  color: item.needs_attention > 0 ? COLORS.danger : COLORS.textHint },
+            { num: item.total_thon,      label: "Tổng thôn", color: COLORS.textPrimary },
+            { num: item.submitted_thon,  label: "Đã nộp",    color: COLORS.accent },
+            { num: item.verified_thon,   label: "Đã duyệt",  color: COLORS.primary },
+            { num: item.needs_attention, label: "Cần chú ý", color: item.needs_attention > 0 ? COLORS.danger : COLORS.textHint },
           ].map(s => (
             <View key={s.label} style={styles.statItem}>
               <Text style={[styles.statNum, { color: s.color }]}>{s.num ?? 0}</Text>
@@ -163,28 +168,29 @@ export default function LanhDaoDashboard() {
     );
   }
 
-  function renderItem({ item, section }) {
-    if (section.key === "action")   return renderPending({ item });
-    if (section.key === "progress") return renderRequest({ item });
-    return null;
-  }
-
-  function renderSectionHeader({ section }) {
-    return (
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>{section.title}</Text>
-      </View>
-    );
-  }
-
-  function renderSectionEmpty(section) {
-    if (section.data.length > 0) return null;
-    return (
-      <View style={styles.emptySection}>
-        <Text style={styles.emptySectionText}>{section.empty}</Text>
-      </View>
-    );
-  }
+  const sections = [
+    {
+      key:        "bypass",
+      title:      `Cần xác nhận bypass (${bypassItems.length})`,
+      data:       bypassItems,
+      renderItem: renderBypass,
+      empty:      "Không có bản ghi nào cần bypass",
+    },
+    ...(waitingItems.length > 0 ? [{
+      key:        "waiting",
+      title:      `Đang xử lý (${waitingItems.length})`,
+      data:       waitingItems,
+      renderItem: renderWaiting,
+      empty:      "",
+    }] : []),
+    {
+      key:        "progress",
+      title:      `Tiến độ · ${dashboard?.requests?.length || 0} yêu cầu`,
+      data:       dashboard?.requests || [],
+      renderItem: renderProgress,
+      empty:      "Chưa có yêu cầu nào",
+    },
+  ];
 
   const summary = dashboard?.summary;
 
@@ -211,34 +217,22 @@ export default function LanhDaoDashboard() {
           </TouchableOpacity>
         </View>
 
-        {/* Summary bar — từ manifest (offline) + dashboard */}
         <View style={styles.summaryCard}>
-          <View style={styles.summaryItem}>
-            <Text style={styles.summaryNum}>{pendingVerifs.length}</Text>
-            <Text style={styles.summaryLabel}>Cần duyệt</Text>
-          </View>
-          <View style={styles.summaryDivider} />
-          <View style={styles.summaryItem}>
-            <Text style={[styles.summaryNum, { color: "#A5D6A7" }]}>
-              {summary?.verified || 0}
-            </Text>
-            <Text style={styles.summaryLabel}>Đã duyệt</Text>
-          </View>
-          <View style={styles.summaryDivider} />
-          <View style={styles.summaryItem}>
-            <Text style={[styles.summaryNum, { color: "#FFE082" }]}>
-              {summary?.pending_verify || 0}
-            </Text>
-            <Text style={styles.summaryLabel}>Chờ duyệt</Text>
-          </View>
-          <View style={styles.summaryDivider} />
-          <View style={styles.summaryItem}>
-            <Text style={[styles.summaryNum,
-              { color: (summary?.needs_attention || 0) > 0 ? "#EF9A9A" : COLORS.white }]}>
-              {summary?.needs_attention || 0}
-            </Text>
-            <Text style={styles.summaryLabel}>Cần chú ý</Text>
-          </View>
+          {[
+            { num: bypassItems.length,         label: "Cần bypass",  color: "#FEF3C7" },
+            { num: summary?.verified || 0,     label: "Đã duyệt",   color: "#A5D6A7" },
+            { num: summary?.pending_verify || 0, label: "Chờ duyệt", color: COLORS.white },
+            { num: summary?.needs_attention || 0, label: "Cần chú ý",
+              color: (summary?.needs_attention || 0) > 0 ? "#EF9A9A" : COLORS.white },
+          ].map((s, i) => (
+            <React.Fragment key={s.label}>
+              {i > 0 && <View style={styles.summaryDivider} />}
+              <View style={styles.summaryItem}>
+                <Text style={[styles.summaryNum, { color: s.color }]}>{s.num}</Text>
+                <Text style={styles.summaryLabel}>{s.label}</Text>
+              </View>
+            </React.Fragment>
+          ))}
         </View>
       </View>
 
@@ -247,9 +241,19 @@ export default function LanhDaoDashboard() {
       <SectionList
         sections={sections}
         keyExtractor={(item, idx) => item.submission_id || item.req_id || String(idx)}
-        renderItem={renderItem}
-        renderSectionHeader={renderSectionHeader}
-        renderSectionFooter={({ section }) => renderSectionEmpty(section)}
+        renderItem={({ item, section }) => section.renderItem({ item })}
+        renderSectionHeader={({ section }) => (
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>{section.title}</Text>
+          </View>
+        )}
+        renderSectionFooter={({ section }) =>
+          section.data.length === 0 && section.empty ? (
+            <View style={styles.emptySection}>
+              <Text style={styles.emptySectionText}>{section.empty}</Text>
+            </View>
+          ) : null
+        }
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl
@@ -278,39 +282,43 @@ const styles = StyleSheet.create({
   summaryNum:   { ...TYPOGRAPHY.displayMedium, color: COLORS.white },
   summaryLabel: { ...TYPOGRAPHY.caption, color: "rgba(255,255,255,0.75)" },
   summaryDivider: { width: 1, backgroundColor: "rgba(255,255,255,0.3)" },
-
-  list: { padding: SPACING.md, paddingBottom: SPACING.xxl },
-
-  sectionHeader: { paddingBottom: SPACING.sm, paddingTop: SPACING.md },
-  sectionTitle:  { ...TYPOGRAPHY.titleMedium, color: COLORS.textPrimary },
-
-  emptySection:     { alignItems: "center", paddingVertical: SPACING.lg },
+  list:         { padding: SPACING.md, paddingBottom: SPACING.xxl },
+  sectionHeader:{ paddingBottom: SPACING.sm, paddingTop: SPACING.md },
+  sectionTitle: { ...TYPOGRAPHY.titleMedium, color: COLORS.textPrimary },
+  emptySection: { alignItems: "center", paddingVertical: SPACING.lg },
   emptySectionText: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textHint },
 
-  // Pending verification cards
-  card:         { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, ...SHADOW.card, gap: SPACING.xs },
-  cardRevision: { borderWidth: 1.5, borderColor: COLORS.danger },
+  // Bypass card (tappable, actionable)
+  bypassCard:   { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, ...SHADOW.card, gap: SPACING.xs, borderLeftWidth: 3, borderLeftColor: "#F59E0B" },
+  bypassBadge:  { backgroundColor: "#FEF3C7", borderRadius: RADIUS.full, paddingHorizontal: SPACING.sm, paddingVertical: 3 },
+  bypassBadgeText: { ...TYPOGRAPHY.caption, color: "#92400E", fontWeight: "600" },
+
+  // Waiting card (read-only, muted)
+  waitingCard:         { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, ...SHADOW.card, gap: SPACING.xs, opacity: 0.8 },
+  waitingCardRevision: { borderLeftWidth: 3, borderLeftColor: COLORS.danger },
+  waitingHint:         { ...TYPOGRAPHY.caption, color: COLORS.textHint, fontStyle: "italic" },
+
   cardTop:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   thonLabel:    { ...TYPOGRAPHY.labelLarge, color: COLORS.primary },
+  reqTitle:     { ...TYPOGRAPHY.bodyLarge, color: COLORS.textPrimary, fontWeight: "600" },
   cardMeta:     { flexDirection: "row", alignItems: "center", gap: SPACING.md },
   metaRow:      { flexDirection: "row", alignItems: "center", gap: SPACING.xs },
   metaText:     { ...TYPOGRAPHY.caption, color: COLORS.textSecondary },
 
-  // Request progress cards
-  reqCard:        { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.lg, marginBottom: SPACING.md, ...SHADOW.card, gap: SPACING.md },
-  reqCardOverdue: { borderWidth: 1.5, borderColor: COLORS.danger },
-  reqTop:         { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: SPACING.sm },
-  reqTitle:       { ...TYPOGRAPHY.bodyLarge, color: COLORS.textPrimary, fontWeight: "600", flex: 1 },
-  progressWrap:   { flexDirection: "row", alignItems: "center", gap: SPACING.sm },
-  progressBg:     { flex: 1, height: 10, backgroundColor: COLORS.divider, borderRadius: RADIUS.full, overflow: "hidden" },
-  progressFill:   { height: "100%", borderRadius: RADIUS.full },
-  progressText:   { ...TYPOGRAPHY.labelMedium, color: COLORS.textSecondary, width: 40, textAlign: "right" },
-  statsRow:       { flexDirection: "row" },
-  statItem:       { flex: 1, alignItems: "center", gap: 2 },
-  statNum:        { ...TYPOGRAPHY.titleLarge, color: COLORS.textPrimary },
-  statLabel:      { ...TYPOGRAPHY.caption, color: COLORS.textSecondary },
-  missingWrap:    { flexDirection: "row", alignItems: "center", gap: SPACING.xs, backgroundColor: COLORS.pendingBg, borderRadius: RADIUS.sm, padding: SPACING.sm },
-  missingText:    { ...TYPOGRAPHY.caption, color: COLORS.accent, flex: 1 },
-  overdueBadge:   { flexDirection: "row", alignItems: "center", gap: SPACING.xs, backgroundColor: COLORS.dangerBg, borderRadius: RADIUS.sm, padding: SPACING.sm },
-  overdueText:    { ...TYPOGRAPHY.caption, color: COLORS.danger },
+  // Progress card
+  progressCard:        { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.lg, marginBottom: SPACING.md, ...SHADOW.card, gap: SPACING.md },
+  progressCardOverdue: { borderWidth: 1.5, borderColor: COLORS.danger },
+  progressTop:         { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: SPACING.sm },
+  progressWrap:        { flexDirection: "row", alignItems: "center", gap: SPACING.sm },
+  progressBg:          { flex: 1, height: 10, backgroundColor: COLORS.divider, borderRadius: RADIUS.full, overflow: "hidden" },
+  progressFill:        { height: "100%", borderRadius: RADIUS.full },
+  progressPct:         { ...TYPOGRAPHY.labelMedium, color: COLORS.textSecondary, width: 40, textAlign: "right" },
+  statsRow:            { flexDirection: "row" },
+  statItem:            { flex: 1, alignItems: "center", gap: 2 },
+  statNum:             { ...TYPOGRAPHY.titleLarge, color: COLORS.textPrimary },
+  statLabel:           { ...TYPOGRAPHY.caption, color: COLORS.textSecondary },
+  missingWrap:         { flexDirection: "row", alignItems: "center", gap: SPACING.xs, backgroundColor: COLORS.pendingBg || "#FFF3E0", borderRadius: RADIUS.sm, padding: SPACING.sm },
+  missingText:         { ...TYPOGRAPHY.caption, color: COLORS.accent, flex: 1 },
+  overdueBadge:        { flexDirection: "row", alignItems: "center", gap: SPACING.xs, backgroundColor: COLORS.dangerBg, borderRadius: RADIUS.sm, padding: SPACING.sm },
+  overdueText:         { ...TYPOGRAPHY.caption, color: COLORS.danger },
 });

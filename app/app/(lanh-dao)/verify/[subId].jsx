@@ -1,8 +1,7 @@
 // app/(lanh-dao)/verify/[subId].jsx
-// LANH_DAO — Xét duyệt bypass.
-// Batch mode:         2 nút Xác nhận / Từ chối + comment
-// Per-indicator mode: bảng checkbox toggle-all + comment
-// (Same UX pattern as CB_CM, cùng logic)
+// LANH_DAO — Xác nhận bypass (chỉ PENDING_VERIFY mới vào được đây).
+// Batch mode + Per-indicator mode — logic giống CB_CM.
+// Khác biệt: hiển thị banner "Bypass" thay vì tiêu đề thông thường.
 
 import React, { useState, useMemo, useCallback } from "react";
 import {
@@ -57,9 +56,9 @@ export default function LanhDaoVerifyScreen() {
 
   const toggleAll = useCallback(() => {
     const next = !allChecked;
-    const updated = {};
-    chiSoIds.forEach(id => { updated[id] = next; });
-    setChecked(updated);
+    const upd  = {};
+    chiSoIds.forEach(id => { upd[id] = next; });
+    setChecked(upd);
   }, [allChecked, chiSoIds]);
 
   const toggleOne = useCallback((id) => {
@@ -80,11 +79,12 @@ export default function LanhDaoVerifyScreen() {
       return;
     }
 
+    const actionWord = decision === "confirm" ? "XÁC NHẬN BYPASS" : "TỪ CHỐI";
     const confirmText = mode === "batch"
-      ? `Bạn sẽ ${decision === "confirm" ? "XÁC NHẬN" : "TỪ CHỐI"} toàn bộ bộ số liệu.`
-      : `${chiSoIds.filter(id => checked[id]).length}/${chiSoIds.length} chỉ tiêu được xác nhận.`;
+      ? `Lãnh đạo sẽ ${actionWord} toàn bộ bộ số liệu này, bỏ qua bước CB chuyên môn.`
+      : `${chiSoIds.filter(id => checked[id]).length}/${chiSoIds.length} chỉ tiêu được xác nhận (bypass).`;
 
-    Alert.alert("Xác nhận xét duyệt lãnh đạo", confirmText, [
+    Alert.alert("Xác nhận quyết định lãnh đạo", confirmText, [
       { text: "Hủy", style: "cancel" },
       { text: "Đồng ý", onPress: doVerify },
     ]);
@@ -99,12 +99,13 @@ export default function LanhDaoVerifyScreen() {
         xa_code,
         submission_id:     subId,
         verify_mode:       mode,
-        decision:          mode === "batch" ? decision : "confirm",
+        decision:          mode === "batch" ? decision : undefined,
         indicator_reviews: mode === "per_indicator" ? buildIndReviews() : undefined,
-        verify_comment:    comment.trim() || undefined,
+        // FIX A7: send "comment" (canonical name), not "verify_comment"
+        comment:           comment.trim() || undefined,
       });
 
-      Alert.alert("Xét duyệt thành công ✓", "Đã lưu quyết định.", [
+      Alert.alert("Xét duyệt thành công ✓", "Đã lưu quyết định lãnh đạo.", [
         { text: "OK", onPress: () => router.back() },
       ]);
     } catch (err) {
@@ -129,13 +130,21 @@ export default function LanhDaoVerifyScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: "Xét duyệt số liệu", headerBackTitle: "Quay lại" }} />
+      <Stack.Screen options={{ title: "Xét duyệt — Lãnh đạo", headerBackTitle: "Quay lại" }} />
       <SafeAreaView style={styles.safe} edges={["bottom"]}>
-        {loading && <LoadingOverlay message="Đang lưu xét duyệt..." />}
+        {loading && <LoadingOverlay message="Đang lưu quyết định..." />}
 
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
 
-          {/* ── Info card ── */}
+          {/* Bypass context banner */}
+          <View style={styles.bypassBanner}>
+            <Ionicons name="shield-outline" size={16} color="#92400E" />
+            <Text style={styles.bypassBannerText}>
+              CB Chuyên môn chưa xét duyệt bản ghi này. Lãnh đạo có thể bypass xác nhận trực tiếp.
+            </Text>
+          </View>
+
+          {/* Info card */}
           <View style={styles.infoCard}>
             {[
               { label: "Yêu cầu",   value: submission.tieu_de || submission.req_id },
@@ -154,7 +163,7 @@ export default function LanhDaoVerifyScreen() {
             </View>
           </View>
 
-          {/* ── Mode toggle ── */}
+          {/* Mode toggle */}
           <View style={styles.modeRow}>
             {[
               { key: "batch",         label: "Theo bộ số liệu", icon: "checkmark-done" },
@@ -165,19 +174,13 @@ export default function LanhDaoVerifyScreen() {
                 style={[styles.modeBtn, mode === m.key && styles.modeBtnActive]}
                 onPress={() => setMode(m.key)}
               >
-                <Ionicons
-                  name={m.icon}
-                  size={16}
-                  color={mode === m.key ? COLORS.white : COLORS.textSecondary}
-                />
-                <Text style={[styles.modeBtnText, mode === m.key && styles.modeBtnTextActive]}>
-                  {m.label}
-                </Text>
+                <Ionicons name={m.icon} size={16} color={mode === m.key ? COLORS.white : COLORS.textSecondary} />
+                <Text style={[styles.modeBtnText, mode === m.key && styles.modeBtnTextActive]}>{m.label}</Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          {/* ── BATCH MODE ── */}
+          {/* BATCH MODE */}
           {mode === "batch" && (
             <>
               <Text style={styles.sectionTitle}>Quyết định lãnh đạo</Text>
@@ -188,10 +191,8 @@ export default function LanhDaoVerifyScreen() {
                 ].map(d => (
                   <TouchableOpacity
                     key={d.key}
-                    style={[
-                      styles.decisionBtn,
-                      { borderColor: d.color, backgroundColor: decision === d.key ? d.color : d.bg },
-                    ]}
+                    style={[styles.decisionBtn,
+                      { borderColor: d.color, backgroundColor: decision === d.key ? d.color : d.bg }]}
                     onPress={() => setDecision(d.key)}
                     activeOpacity={0.8}
                   >
@@ -204,12 +205,11 @@ export default function LanhDaoVerifyScreen() {
             </>
           )}
 
-          {/* ── PER-INDICATOR MODE: bảng checkbox ── */}
+          {/* PER-INDICATOR MODE */}
           {mode === "per_indicator" && (
             <>
               <Text style={styles.sectionTitle}>Chọn chỉ tiêu đạt chuẩn</Text>
               <View style={styles.table}>
-
                 <TouchableOpacity style={styles.tableHeader} onPress={toggleAll} activeOpacity={0.7}>
                   <Text style={styles.tableHeaderText}>Chỉ tiêu</Text>
                   <Text style={[styles.tableHeaderText, styles.colValue]}>Giá trị</Text>
@@ -222,27 +222,23 @@ export default function LanhDaoVerifyScreen() {
                     <Text style={styles.toggleAllLabel}>Tất cả</Text>
                   </View>
                 </TouchableOpacity>
-
                 <View style={styles.tableDivider} />
-
                 {chiSoIds.map((id, idx) => {
                   const ind    = indicatorMap[id];
                   const val    = submission.values?.[id];
                   const isLast = idx === chiSoIds.length - 1;
                   return (
                     <View key={id}>
-                      <TouchableOpacity
-                        style={styles.tableRow}
-                        onPress={() => toggleOne(id)}
-                        activeOpacity={0.6}
-                      >
+                      <TouchableOpacity style={styles.tableRow} onPress={() => toggleOne(id)} activeOpacity={0.6}>
                         <View style={styles.colName}>
                           <Text style={styles.indName} numberOfLines={2}>{ind?.ten_chi_so || id}</Text>
                           <Text style={styles.indId}>{id}</Text>
                         </View>
                         <Text style={styles.colValue}>
                           {val !== undefined
-                            ? `${val}${ind?.don_vi_do ? " " + ind.don_vi_do : ""}`
+                            ? typeof val === "boolean"
+                              ? (val ? "Có" : "Không")
+                              : `${val}${ind?.don_vi_do ? " " + ind.don_vi_do : ""}`
                             : "—"}
                         </Text>
                         <View style={[styles.colCheck, { justifyContent: "center" }]}>
@@ -257,7 +253,6 @@ export default function LanhDaoVerifyScreen() {
                     </View>
                   );
                 })}
-
                 <View style={styles.tableDivider} />
                 <View style={styles.tableFooter}>
                   <Text style={styles.tableFooterText}>
@@ -277,12 +272,12 @@ export default function LanhDaoVerifyScreen() {
             </>
           )}
 
-          {/* ── Comment chung ── */}
+          {/* Comment */}
           <Text style={styles.sectionTitle}>Ghi chú lãnh đạo (tùy chọn)</Text>
           <View style={styles.commentWrap}>
             <TextInput
               style={styles.commentInput}
-              placeholder="Nhập nhận xét của lãnh đạo..."
+              placeholder="Nhận xét của lãnh đạo xã..."
               placeholderTextColor={COLORS.textHint}
               value={comment}
               onChangeText={setComment}
@@ -292,7 +287,7 @@ export default function LanhDaoVerifyScreen() {
             />
           </View>
 
-          {/* ── Submit ── */}
+          {/* Submit */}
           <TouchableOpacity
             style={[styles.submitBtn, (mode === "batch" && !decision) && styles.submitBtnDisabled]}
             onPress={handleSubmit}
@@ -310,32 +305,26 @@ export default function LanhDaoVerifyScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe:      { flex: 1, backgroundColor: COLORS.background },
-  scroll:    { padding: SPACING.md, paddingBottom: SPACING.xxl },
-  center:    { flex: 1, justifyContent: "center", alignItems: "center", gap: SPACING.sm, padding: SPACING.xl },
+  safe:   { flex: 1, backgroundColor: COLORS.background },
+  scroll: { padding: SPACING.md, paddingBottom: SPACING.xxl },
+  center: { flex: 1, justifyContent: "center", alignItems: "center", gap: SPACING.sm, padding: SPACING.xl },
   errorText: { ...TYPOGRAPHY.bodyLarge, color: COLORS.danger },
   errorSub:  { ...TYPOGRAPHY.caption, color: COLORS.textHint },
-
-  infoCard: {
-    backgroundColor: COLORS.white, borderRadius: RADIUS.lg,
-    padding: SPACING.lg, marginBottom: SPACING.lg, ...SHADOW.card, gap: SPACING.sm,
-  },
+  bypassBanner: { flexDirection: "row", alignItems: "flex-start", gap: SPACING.sm, backgroundColor: "#FEF3C7", borderRadius: RADIUS.md, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: "#F59E0B" },
+  bypassBannerText: { ...TYPOGRAPHY.bodyMedium, color: "#92400E", flex: 1 },
+  infoCard:  { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.lg, marginBottom: SPACING.lg, ...SHADOW.card, gap: SPACING.sm },
   infoRow:   { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   infoLabel: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
   infoValue: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textPrimary, fontWeight: "600", flex: 1, textAlign: "right" },
-
   sectionTitle: { ...TYPOGRAPHY.titleMedium, color: COLORS.textPrimary, marginBottom: SPACING.sm, marginTop: SPACING.md },
-
-  modeRow:           { flexDirection: "row", gap: SPACING.sm, marginBottom: SPACING.sm },
-  modeBtn:           { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: SPACING.xs, borderWidth: 1.5, borderColor: COLORS.border, borderRadius: RADIUS.md, paddingVertical: SPACING.md, backgroundColor: COLORS.white },
-  modeBtnActive:     { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
-  modeBtnText:       { ...TYPOGRAPHY.labelMedium, color: COLORS.textSecondary },
-  modeBtnTextActive: { color: COLORS.white },
-
+  modeRow:          { flexDirection: "row", gap: SPACING.sm, marginBottom: SPACING.sm },
+  modeBtn:          { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: SPACING.xs, borderWidth: 1.5, borderColor: COLORS.border, borderRadius: RADIUS.md, paddingVertical: SPACING.md, backgroundColor: COLORS.white },
+  modeBtnActive:    { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  modeBtnText:      { ...TYPOGRAPHY.labelMedium, color: COLORS.textSecondary },
+  modeBtnTextActive:{ color: COLORS.white },
   decisionRow:  { flexDirection: "row", gap: SPACING.md, marginBottom: SPACING.md },
   decisionBtn:  { flex: 1, borderWidth: 2, borderRadius: RADIUS.md, paddingVertical: SPACING.lg, alignItems: "center" },
   decisionText: { ...TYPOGRAPHY.titleMedium, textAlign: "center" },
-
   table:           { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, marginBottom: SPACING.md, ...SHADOW.card, overflow: "hidden" },
   tableHeader:     { flexDirection: "row", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.primaryPale },
   tableHeaderText: { ...TYPOGRAPHY.labelMedium, color: COLORS.primary, flex: 1 },
@@ -351,10 +340,8 @@ const styles = StyleSheet.create({
   tableFooter:     { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.background },
   tableFooterText: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
   tableFooterReject: { ...TYPOGRAPHY.bodyMedium, color: COLORS.danger },
-
   commentWrap:  { backgroundColor: COLORS.white, borderRadius: RADIUS.md, borderWidth: 1.5, borderColor: COLORS.border, padding: SPACING.md, marginBottom: SPACING.md, minHeight: 100 },
   commentInput: { ...TYPOGRAPHY.bodyLarge, color: COLORS.textPrimary, minHeight: 80 },
-
   submitBtn:         { flexDirection: "row", backgroundColor: COLORS.primary, borderRadius: RADIUS.md, height: TOUCH_TARGET + 8, justifyContent: "center", alignItems: "center", gap: SPACING.sm, ...SHADOW.elevated },
   submitBtnDisabled: { backgroundColor: COLORS.textHint },
   submitBtnText:     { ...TYPOGRAPHY.titleMedium, color: COLORS.white },
