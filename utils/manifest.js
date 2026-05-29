@@ -4,50 +4,33 @@ const { db, paths, queryAll, serverTimestamp } = require("./firestore");
 const { ROLES, INDICATOR_STATUS, REQUEST_STATUS, QUOTA } = require("./constants");
 
 // ============================================================
-// MANIFEST UTILITIES  v2
+// MANIFEST UTILITIES  v3
 //
-// Changes from v1:
-//   - CB_THON: manifest now includes full submission state per
-//     request (submission_id, submission_status, verify_comment,
-//     indicator_reviews, submitted_values) so CB_THON can see
-//     rejections and resubmit offline-first.
-//
-//   - CB_CM:
-//       pending_verifications = PENDING_VERIFY + IN_REVIEW  (actionable)
-//       waiting_revision      = NEEDS_REVISION              (informational)
-//
-//   - LANH_DAO / ADMIN:
-//       pending_verifications = PENDING_VERIFY only          (bypass-able)
-//       waiting_revision      = IN_REVIEW + NEEDS_REVISION   (informational)
-//
-//   - _mapSubmission helper centralized to avoid duplication.
+// Added (v3):
+//   CB_CM manifest now includes:
+//     my_indicators[]  — own indicators (all statuses) for management UI
+//   LANH_DAO manifest now includes:
+//     pending_indicators[] — PENDING indicators awaiting approval
+//   Reads are run in parallel (Promise.all) to keep latency low.
 // ============================================================
 
-// ============================================================
-// PUBLIC: filterManifestForUser
-// Pure in-memory filter — no Firestore reads.
-// ============================================================
 function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) {
   const { vai_tro, don_vi, linh_vuc_codes } = user;
 
   let indicators = fullManifest.indicators || [];
   let requests   = fullManifest.requests   || [];
 
-  // ── Indicator filtering ──────────────────────────────────
   if (vai_tro === ROLES.CB_CHUYEN_MON) {
     const allowedLv = new Set(linh_vuc_codes || []);
     indicators = indicators.filter(i => allowedLv.has(i.linh_vuc));
   }
-  // LANH_DAO / ADMIN / CB_THON: see all active indicators
 
-  // ── Request filtering ────────────────────────────────────
   if (vai_tro === ROLES.CB_THON) {
     requests = requests
       .filter(r => Array.isArray(r.danh_sach_thon) && r.danh_sach_thon.includes(don_vi))
       .map(r => ({
         ...r,
         has_submitted:     submittedReqIds.has(r.req_id),
-        // submission_id, submission_status etc. enriched in buildManifest
         submission_id:     null,
         submission_status: null,
         verify_comment:    null,
@@ -64,7 +47,6 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
       }))
     );
   }
-  // LANH_DAO / ADMIN: see all requests
 
   return {
     manifest_version: fullManifest.version,
@@ -88,17 +70,7 @@ function filterManifestForUser(fullManifest, user, submittedReqIds = new Set()) 
   };
 }
 
-// ============================================================
-// PUBLIC: buildManifest
-//
-// Quota:
-//   CB_THON:       2 reads (manifest + own submissions)
-//   CB_CM:         2 reads (manifest + pending subs)
-//   LANH_DAO:      2 reads (manifest + pending subs)
-//   Others:        1 read  (manifest only)
-// ============================================================
 async function buildManifest(xa_code, year, user, client_version = null) {
-  // Read 1: pre-computed manifest
   const manifestSnap = await paths.manifest(xa_code).get();
 
   if (!manifestSnap.exists) {
@@ -110,16 +82,11 @@ async function buildManifest(xa_code, year, user, client_version = null) {
   const fullManifest = manifestSnap.data();
   const effectiveYear = year || fullManifest.year;
 
-  // ── Conditional fetch optimization ──────────────────────
-  if (
-    QUOTA.MANIFEST_CONDITIONAL_FETCH &&
-    client_version &&
-    client_version === fullManifest.version
-  ) {
+  if (QUOTA.MANIFEST_CONDITIONAL_FETCH && client_version && client_version === fullManifest.version) {
     return { up_to_date: true, manifest_version: fullManifest.version };
   }
 
-  // ── Read 2a (CB_THON): full submissions for status enrichment ─
+  // ── CB_THON: full submission data ────────────────────────
   let submittedReqIds = new Set();
   let subByReq = {};
 
@@ -127,19 +94,15 @@ async function buildManifest(xa_code, year, user, client_version = null) {
     const subs = await queryAll(
       paths.submissions(xa_code)
         .where("thon_code", "==", user.don_vi)
-        .where("year", "==", effectiveYear)
+        .where("year",      "==", effectiveYear)
     );
-    for (const s of subs) {
-      subByReq[s.req_id] = s;
-    }
+    for (const s of subs) { subByReq[s.req_id] = s; }
     submittedReqIds = new Set(Object.keys(subByReq));
   }
 
   const filtered = filterManifestForUser(fullManifest, user, submittedReqIds);
 
-  // ── Enrich CB_THON requests with submission state ────────
-  // CB_THON now knows: submission_status, rejection reason,
-  // indicator_reviews, and old values to pre-fill resubmit form.
+  // CB_THON: enrich requests with submission state
   if (user.vai_tro === ROLES.CB_THON) {
     filtered.requests = filtered.requests.map(r => {
       const sub = subByReq[r.req_id];
@@ -155,55 +118,66 @@ async function buildManifest(xa_code, year, user, client_version = null) {
     });
   }
 
-  // ── Read 2b (CB_CM): single query, split in memory ───────
-  //   pending_verifications = PENDING_VERIFY + IN_REVIEW  (actionable)
-  //   waiting_revision      = NEEDS_REVISION              (informational only)
+  // ── CB_CM: submissions + own indicators (parallel) ───────
   if (user.vai_tro === ROLES.CB_CHUYEN_MON) {
     const allowedLv = new Set(user.linh_vuc_codes || []);
-
     const relevantReqIds = new Set(
       (fullManifest.requests || [])
-        .filter(r =>
-          Array.isArray(r.chi_so_ids) &&
-          r.chi_so_ids.some(id => {
-            const ind = (fullManifest.indicators || []).find(i => i.chi_so_id === id);
-            return ind && allowedLv.has(ind.linh_vuc);
-          })
-        )
+        .filter(r => Array.isArray(r.chi_so_ids) && r.chi_so_ids.some(id => {
+          const ind = (fullManifest.indicators || []).find(i => i.chi_so_id === id);
+          return ind && allowedLv.has(ind.linh_vuc);
+        }))
         .map(r => r.req_id || r.id)
     );
 
-    if (relevantReqIds.size > 0) {
-      const allSubs = await queryAll(
-        paths.submissions(xa_code)
-          .where("year", "==", effectiveYear)
-          .where("status", "in", ["PENDING_VERIFY", "IN_REVIEW", "NEEDS_REVISION"])
-      );
+    const userId = user.user_id || user.id;
 
-      const relevant = allSubs.filter(s => relevantReqIds.has(s.req_id));
+    const [allSubs, myInds] = await Promise.all([
+      relevantReqIds.size > 0
+        ? queryAll(paths.submissions(xa_code)
+            .where("year",   "==", effectiveYear)
+            .where("status", "in", ["PENDING_VERIFY", "IN_REVIEW", "NEEDS_REVISION"]))
+        : Promise.resolve([]),
+      queryAll(paths.indicators(xa_code)
+        .where("year",       "==", effectiveYear)
+        .where("created_by", "==", userId)),
+    ]);
 
-      filtered.pending_verifications = relevant
-        .filter(s => s.status === "PENDING_VERIFY" || s.status === "IN_REVIEW")
-        .map(s => _mapSubmission(s, fullManifest.requests));
+    const relevant = allSubs.filter(s => relevantReqIds.has(s.req_id));
 
-      filtered.waiting_revision = relevant
-        .filter(s => s.status === "NEEDS_REVISION")
-        .map(s => _mapSubmission(s, fullManifest.requests));
-    } else {
-      filtered.pending_verifications = [];
-      filtered.waiting_revision = [];
-    }
+    filtered.pending_verifications = relevant
+      .filter(s => s.status === "PENDING_VERIFY" || s.status === "IN_REVIEW")
+      .map(s => _mapSubmission(s, fullManifest.requests));
+
+    filtered.waiting_revision = relevant
+      .filter(s => s.status === "NEEDS_REVISION")
+      .map(s => _mapSubmission(s, fullManifest.requests));
+
+    // my_indicators: all statuses of own indicators for management UI
+    filtered.my_indicators = myInds.map(ind => ({
+      chi_so_id:        ind.chi_so_id || ind.id,
+      ten_chi_so:       ind.ten_chi_so,
+      don_vi_do:        ind.don_vi_do || null,
+      kieu_du_lieu:     ind.kieu_du_lieu,
+      linh_vuc:         ind.linh_vuc,
+      status:           ind.status,
+      rejection_reason: ind.rejection_reason || null,
+      created_at:       _toIso(ind.created_at),
+      updated_at:       _toIso(ind.updated_at),
+    }));
   }
 
-  // ── Read 2c (LANH_DAO / ADMIN): single query, split in memory ─
-  //   pending_verifications = PENDING_VERIFY only          (bypass-able)
-  //   waiting_revision      = IN_REVIEW + NEEDS_REVISION   (informational only)
+  // ── LANH_DAO: submissions + pending indicators (parallel) ─
   if (user.vai_tro === ROLES.LANH_DAO || user.vai_tro === ROLES.ADMIN) {
-    const allSubs = await queryAll(
-      paths.submissions(xa_code)
-        .where("year", "==", effectiveYear)
-        .where("status", "in", ["PENDING_VERIFY", "IN_REVIEW", "NEEDS_REVISION"])
-    );
+    const [allSubs, pendingInds] = await Promise.all([
+      queryAll(paths.submissions(xa_code)
+        .where("year",   "==", effectiveYear)
+        .where("status", "in", ["PENDING_VERIFY", "IN_REVIEW", "NEEDS_REVISION"])),
+      queryAll(paths.indicators(xa_code)
+        .where("year",   "==", effectiveYear)
+        .where("status", "==", "PENDING")
+        .where("nhanh",  "==", user.nhanh)),
+    ]);
 
     filtered.pending_verifications = allSubs
       .filter(s => s.status === "PENDING_VERIFY")
@@ -212,40 +186,45 @@ async function buildManifest(xa_code, year, user, client_version = null) {
     filtered.waiting_revision = allSubs
       .filter(s => s.status === "IN_REVIEW" || s.status === "NEEDS_REVISION")
       .map(s => _mapSubmission(s, fullManifest.requests));
+
+    // pending_indicators: PENDING indicators awaiting LANH_DAO approval
+    filtered.pending_indicators = pendingInds.map(ind => ({
+      chi_so_id:    ind.chi_so_id || ind.id,
+      ten_chi_so:   ind.ten_chi_so,
+      don_vi_do:    ind.don_vi_do || null,
+      mo_ta:        ind.mo_ta || null,
+      kieu_du_lieu: ind.kieu_du_lieu,
+      linh_vuc:     ind.linh_vuc,
+      status:       ind.status,
+      created_by:   ind.created_by || null,
+      created_at:   _toIso(ind.created_at),
+    }));
   }
 
   return filtered;
 }
 
-// ============================================================
-// PUBLIC: rebuildManifest
-// ============================================================
 async function rebuildManifest(xa_code, year) {
   const [indicators, requests, xaSnap] = await Promise.all([
-    queryAll(
-      paths.indicators(xa_code)
-        .where("status", "==", INDICATOR_STATUS.ACTIVE)
-        .where("year", "==", year)
-    ),
-    queryAll(
-      paths.requests(xa_code)
-        .where("status", "==", REQUEST_STATUS.OPEN)
-        .where("year", "==", year)
-    ),
+    queryAll(paths.indicators(xa_code)
+      .where("status", "==", INDICATOR_STATUS.ACTIVE)
+      .where("year",   "==", year)),
+    queryAll(paths.requests(xa_code)
+      .where("status", "==", REQUEST_STATUS.OPEN)
+      .where("year",   "==", year)),
     paths.xa(xa_code).get(),
   ]);
 
   const xaData  = xaSnap.exists ? xaSnap.data() : {};
   const version = `v${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 15)}`;
 
-  const manifest = {
+  await paths.manifest(xa_code).set({
     version,
     generated_at:    serverTimestamp(),
     xa_code,
     xa_name:         xaData.xa_name || xa_code,
     year,
     drive_folder_id: xaData.drive_folder_id || null,
-
     indicators: indicators.map(i => ({
       chi_so_id:    i.chi_so_id || i.id,
       ten_chi_so:   i.ten_chi_so,
@@ -255,7 +234,6 @@ async function rebuildManifest(xa_code, year) {
       linh_vuc:     i.linh_vuc,
       validation:   i.validation || {},
     })),
-
     requests: requests.map(r => ({
       req_id:         r.req_id || r.id,
       tieu_de:        r.tieu_de,
@@ -266,20 +244,13 @@ async function rebuildManifest(xa_code, year) {
       ghi_chu:        r.ghi_chu || null,
       tao_boi:        r.tao_boi || null,
     })),
-  };
+  });
 
-  await paths.manifest(xa_code).set(manifest);
   return version;
 }
 
-// ============================================================
-// INTERNAL HELPERS
-// ============================================================
+// ── Helpers ───────────────────────────────────────────────────
 
-/**
- * Map a Firestore submission doc to the manifest response shape.
- * Used by CB_CM and LANH_DAO sections.
- */
 function _mapSubmission(s, requests) {
   const req = (requests || []).find(r => (r.req_id || r.id) === s.req_id);
   return {
@@ -299,7 +270,6 @@ function _mapSubmission(s, requests) {
   };
 }
 
-/** Convert any Timestamp to ISO string. */
 function _toIso(ts) {
   if (!ts) return null;
   if (typeof ts === "string") return ts;
@@ -308,7 +278,6 @@ function _toIso(ts) {
   return null;
 }
 
-/** Normalize to array. */
 function _toArray(val) {
   if (Array.isArray(val)) return val;
   if (!val) return [];

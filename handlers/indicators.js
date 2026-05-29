@@ -1,65 +1,41 @@
+// handlers/indicators.js
 "use strict";
 
-const { db, serverTimestamp }            = require("../utils/firestore");
+const { db, paths, queryAll, serverTimestamp } = require("../utils/firestore");
 const { rebuildManifest }                = require("../utils/manifest");
 const { validateToken }                  = require("../middleware/validateToken");
 const { checkPermission }                = require("../middleware/checkPermission");
 const { logAudit }                       = require("../middleware/logAudit");
 const { successResponse, errorResponse } = require("../utils/response");
-const { ACTIONS, ERROR_CODES, INDICATOR_STATUS } = require("../utils/constants");
+const {
+  ACTIONS, ERROR_CODES, INDICATOR_STATUS,
+} = require("../utils/constants");
 
 // ============================================================
-// INDICATORS HANDLER
+// INDICATORS HANDLER  v2
 //
-// createIndicator  — CB_CM/LANH_DAO/ADMIN tạo indicator → DRAFT
-// approveIndicator — LANH_DAO/ADMIN duyệt DRAFT|PENDING → ACTIVE
-//                    triggers rebuildManifest()
-//
-// Status flow: DRAFT → PENDING → ACTIVE → ARCHIVED
+// Status flow:
 //   createIndicator  : → DRAFT
-//   approveIndicator : DRAFT|PENDING → ACTIVE  (triggers manifest rebuild)
+//   submitIndicator  : DRAFT | REJECTED → PENDING   (CB_CM gửi duyệt)
+//   approveIndicator : PENDING → ACTIVE              (LANH_DAO duyệt)
+//   rejectIndicator  : PENDING → REJECTED            (LANH_DAO từ chối)
 //
-// Quota (createIndicator):
-//   1 read  — validateToken
-//   1 write — indicator doc
-//   1 write — audit log
-//   Total: 1R + 2W
-//
-// Quota (approveIndicator):
-//   1 read  — validateToken
-//   1 read  — indicator doc
-//   1 write — update indicator
-//   1 write — audit log
-//   2 reads + 1 write — rebuildManifest (indicators + requests + manifest write)
-//   Total: 4R + 3W
+// Uniqueness: (ten_chi_so_normalized + don_vi_do_normalized) per xa+year,
+//   across DRAFT/PENDING/ACTIVE — prevents duplicates across lĩnh vực.
+//   REJECTED + ARCHIVED are excluded (allow re-creation).
 // ============================================================
 
-// Valid kieu_du_lieu values per spec
 const VALID_KIEU_DU_LIEU = ["so", "text", "boolean", "anh"];
 
-// ============================================================
-// CREATE INDICATOR
-// ============================================================
+// Normalize string for duplicate check
+function _norm(s) {
+  if (!s) return "";
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
 
-/**
- * POST /create_indicator
- *
- * Body: {
- *   token, user_id, xa_code, year,
- *   ten_chi_so:   string  (required),
- *   kieu_du_lieu: "so"|"text"|"boolean"|"anh"  (required),
- *   linh_vuc:     string  (required),
- *   mo_ta?:       string,
- *   don_vi_do?:   string,
- *   validation?:  { required?, min?, max? }
- * }
- *
- * Creates indicator with status DRAFT.
- * Manifest is NOT rebuilt yet — only rebuilt when indicator reaches ACTIVE.
- */
+// ── CREATE INDICATOR ──────────────────────────────────────────
+
 async function createIndicator(req, res) {
-
-  // ── 1. Auth ───────────────────────────────────────────────
   const user = await validateToken(req);
 
   const {
@@ -70,45 +46,42 @@ async function createIndicator(req, res) {
 
   const yearNum = Number(year);
 
-  // ── 2. Input validation ───────────────────────────────────
-  if (!xa_code || !year) {
+  if (!xa_code || !year)
     return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu xa_code hoặc year");
-  }
-  if (!ten_chi_so) {
+  if (!ten_chi_so?.trim())
     return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu ten_chi_so");
-  }
-  if (!kieu_du_lieu) {
-    return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu kieu_du_lieu");
-  }
-  if (!VALID_KIEU_DU_LIEU.includes(kieu_du_lieu)) {
-    return errorResponse(res, ERROR_CODES.DATA_001,
-      `kieu_du_lieu không hợp lệ — phải là: ${VALID_KIEU_DU_LIEU.join(", ")}`);
-  }
-  if (!linh_vuc) {
+  if (!kieu_du_lieu || !VALID_KIEU_DU_LIEU.includes(kieu_du_lieu))
+    return errorResponse(res, ERROR_CODES.DATA_001, `kieu_du_lieu phải là: ${VALID_KIEU_DU_LIEU.join(", ")}`);
+  if (!linh_vuc)
     return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu linh_vuc");
+  if (validation && kieu_du_lieu !== "so" && (validation.min !== undefined || validation.max !== undefined))
+    return errorResponse(res, ERROR_CODES.DATA_001, "min/max chỉ áp dụng cho kieu_du_lieu = 'so'");
+
+  checkPermission(user, ACTIONS.CREATE_INDICATOR, { linh_vuc, nhanh: user.nhanh });
+
+  // ── Uniqueness check (in-memory, covers all non-archived) ──
+  const nameNorm = _norm(ten_chi_so);
+  const unitNorm = _norm(don_vi_do || "");
+
+  const existing = await queryAll(
+    paths.indicators(xa_code)
+      .where("year", "==", yearNum)
+      .where("status", "in", [INDICATOR_STATUS.DRAFT, INDICATOR_STATUS.PENDING, INDICATOR_STATUS.ACTIVE])
+  );
+
+  const duplicate = existing.find(ind =>
+    _norm(ind.ten_chi_so) === nameNorm &&
+    _norm(ind.don_vi_do || "") === unitNorm
+  );
+
+  if (duplicate) {
+    return errorResponse(res, ERROR_CODES.DATA_006,
+      `Chỉ số "${ten_chi_so.trim()}"${don_vi_do ? ` (${don_vi_do})` : ""} đã tồn tại ` +
+      `(${duplicate.chi_so_id || duplicate.id} — ${duplicate.status}). ` +
+      `Nếu lĩnh vực bạn cũng cần chỉ số này, hãy tham chiếu ${duplicate.chi_so_id || duplicate.id} khi tạo request.`
+    );
   }
 
-  // Validation object rules: min/max only apply to "so"
-  if (validation) {
-    if (kieu_du_lieu !== "so" && (validation.min !== undefined || validation.max !== undefined)) {
-      return errorResponse(res, ERROR_CODES.DATA_001,
-        "min/max chỉ áp dụng cho kieu_du_lieu = 'so'");
-    }
-  }
-
-  // ── 3. Permission check ───────────────────────────────────
-  // CB_CM: linh_vuc must be in their linh_vuc_codes (R3)
-  //        nhanh must match (cannot create for another branch)
-  // LANH_DAO: nhanh must match
-  // ADMIN: no restriction
-  checkPermission(user, ACTIONS.CREATE_INDICATOR, {
-    linh_vuc,
-    nhanh: user.nhanh,
-  });
-
-  // ── 4. Write indicator doc ─────────────────────────────────
-  // Use Firestore auto-ID as chi_so_id for uniqueness guarantee.
-  // Format: CS_ + first 8 chars of doc ID (uppercase) for readability.
   const tempRef   = db.collection(`communes/${xa_code}/indicators`).doc();
   const chi_so_id = `CS_${tempRef.id.substring(0, 8).toUpperCase()}`;
   const newRef    = db.collection(`communes/${xa_code}/indicators`).doc(chi_so_id);
@@ -116,148 +89,190 @@ async function createIndicator(req, res) {
 
   await newRef.set({
     chi_so_id,
-    ten_chi_so:   ten_chi_so.trim(),
-    mo_ta:        mo_ta    ? mo_ta.trim()    : null,
-    don_vi_do:    don_vi_do ? don_vi_do.trim() : null,
+    ten_chi_so:    ten_chi_so.trim(),
+    mo_ta:         mo_ta      ? mo_ta.trim()      : null,
+    don_vi_do:     don_vi_do  ? don_vi_do.trim()  : null,
     kieu_du_lieu,
     linh_vuc,
-    nhanh:        user.nhanh,    // stored for approve scope check (no extra user read)
-    validation:   _normalizeValidation(validation, kieu_du_lieu),
-    created_by:   user.id,
-    status:       INDICATOR_STATUS.DRAFT,
-    created_at:   now,
-    updated_at:   now,
-    approved_by:  null,
-    approved_at:  null,
-    year:         yearNum,
+    nhanh:         user.nhanh,
+    validation:    _normalizeValidation(validation, kieu_du_lieu),
+    created_by:    user.user_id || user.id,
+    status:        INDICATOR_STATUS.DRAFT,
+    created_at:    now,
+    updated_at:    now,
+    approved_by:   null,
+    approved_at:   null,
+    rejected_by:   null,
+    rejected_at:   null,
+    rejection_reason: null,
+    year:          yearNum,
   });
 
-  // ── 5. Audit log ──────────────────────────────────────────
   await logAudit(user, ACTIONS.CREATE_INDICATOR, {
-    xa_code, year: yearNum,
-    chi_so_id, linh_vuc,
-    status: INDICATOR_STATUS.DRAFT,
+    xa_code, year: yearNum, chi_so_id, linh_vuc, status: INDICATOR_STATUS.DRAFT,
   }, req);
-
-  // No manifest rebuild — indicator is DRAFT, not visible to CB_THON yet.
 
   return successResponse(res, {
     chi_so_id,
-    status:     INDICATOR_STATUS.DRAFT,
-    message:    "Chỉ số đã được tạo ở trạng thái DRAFT. Cần LANH_DAO duyệt để kích hoạt.",
+    status:  INDICATOR_STATUS.DRAFT,
+    message: "Chỉ số đã tạo (DRAFT). Bấm 'Gửi duyệt' khi hoàn chỉnh.",
   });
 }
 
-// ============================================================
-// APPROVE INDICATOR
-// ============================================================
+// ── SUBMIT INDICATOR (DRAFT | REJECTED → PENDING) ────────────
 
-/**
- * POST /approve_indicator
- *
- * Body: {
- *   token, user_id, xa_code, year,
- *   chi_so_id: string  (required)
- * }
- *
- * Transitions indicator DRAFT|PENDING → ACTIVE.
- * Triggers rebuildManifest() so clients see the new indicator.
- */
-async function approveIndicator(req, res) {
-
-  // ── 1. Auth ───────────────────────────────────────────────
+async function submitIndicator(req, res) {
   const user = await validateToken(req);
-
   const { xa_code, year, chi_so_id } = req.body;
   const yearNum = Number(year);
 
-  // ── 2. Input validation ───────────────────────────────────
-  if (!xa_code || !year) {
-    return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu xa_code hoặc year");
-  }
-  if (!chi_so_id) {
-    return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu chi_so_id");
-  }
+  if (!xa_code || !chi_so_id)
+    return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu xa_code hoặc chi_so_id");
 
-  // ── 3. Read indicator — 1 Firestore read ──────────────────
   const indRef  = db.collection(`communes/${xa_code}/indicators`).doc(chi_so_id);
   const indSnap = await indRef.get();
 
-  if (!indSnap.exists) {
+  if (!indSnap.exists)
+    return errorResponse(res, ERROR_CODES.DATA_005, `Chỉ số ${chi_so_id} không tồn tại`);
+
+  const ind = indSnap.data();
+
+  checkPermission(user, ACTIONS.SUBMIT_INDICATOR, {
+    created_by: ind.created_by,
+  });
+
+  const submittableStatuses = [INDICATOR_STATUS.DRAFT, INDICATOR_STATUS.REJECTED];
+  if (!submittableStatuses.includes(ind.status)) {
     return errorResponse(res, ERROR_CODES.DATA_005,
-      `Indicator ${chi_so_id} không tồn tại`);
+      `Không thể gửi duyệt ở trạng thái "${ind.status}". Phải là: ${submittableStatuses.join(" | ")}`);
   }
+
+  const now = serverTimestamp();
+  await indRef.update({
+    status:        INDICATOR_STATUS.PENDING,
+    rejection_reason: null,
+    rejected_by:   null,
+    rejected_at:   null,
+    updated_at:    now,
+  });
+
+  await logAudit(user, ACTIONS.SUBMIT_INDICATOR, {
+    xa_code, year: yearNum, chi_so_id, previous_status: ind.status,
+  }, req);
+
+  return successResponse(res, {
+    chi_so_id,
+    status:  INDICATOR_STATUS.PENDING,
+    message: "Đã gửi duyệt. Chờ lãnh đạo xác nhận.",
+  });
+}
+
+// ── APPROVE INDICATOR (PENDING → ACTIVE) ─────────────────────
+
+async function approveIndicator(req, res) {
+  const user = await validateToken(req);
+  const { xa_code, year, chi_so_id } = req.body;
+  const yearNum = Number(year);
+
+  if (!xa_code || !year)
+    return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu xa_code hoặc year");
+  if (!chi_so_id)
+    return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu chi_so_id");
+
+  const indRef  = db.collection(`communes/${xa_code}/indicators`).doc(chi_so_id);
+  const indSnap = await indRef.get();
+
+  if (!indSnap.exists)
+    return errorResponse(res, ERROR_CODES.DATA_005, `Indicator ${chi_so_id} không tồn tại`);
 
   const indicator = indSnap.data();
 
-  // ── 4. Permission check ───────────────────────────────────
-  // R1: only LANH_DAO/ADMIN can approve.
-  // LANH_DAO: nhanh must match the indicator's nhanh
-  // (indicator stores nhanh at creation — no extra user read needed)
-  checkPermission(user, ACTIONS.APPROVE_INDICATOR, {
-    nhanh: indicator.nhanh,
-  });
+  checkPermission(user, ACTIONS.APPROVE_INDICATOR, { nhanh: indicator.nhanh });
 
-  // ── 5. Status check (DATA_005) ────────────────────────────
-  const approvableStatuses = [INDICATOR_STATUS.DRAFT, INDICATOR_STATUS.PENDING];
-  if (!approvableStatuses.includes(indicator.status)) {
+  // LANH_DAO only approves PENDING
+  if (indicator.status !== INDICATOR_STATUS.PENDING) {
     return errorResponse(res, ERROR_CODES.DATA_005,
-      `Indicator ${chi_so_id} không ở trạng thái hợp lệ để duyệt ` +
-      `(status hiện tại: ${indicator.status})`);
+      `Chỉ có thể duyệt indicator ở trạng thái PENDING (hiện tại: ${indicator.status})`);
   }
 
-  // ── 6. Update indicator → ACTIVE ──────────────────────────
   const now = serverTimestamp();
   await indRef.update({
     status:      INDICATOR_STATUS.ACTIVE,
-    approved_by: user.id,
+    approved_by: user.user_id || user.id,
     approved_at: now,
     updated_at:  now,
   });
 
-  // ── 7. Audit log ──────────────────────────────────────────
   await logAudit(user, ACTIONS.APPROVE_INDICATOR, {
-    xa_code, year: yearNum,
-    chi_so_id,
-    previous_status: indicator.status,
-    new_status:      INDICATOR_STATUS.ACTIVE,
+    xa_code, year: yearNum, chi_so_id, previous_status: indicator.status,
   }, req);
 
-  // ── 8. Rebuild manifest ───────────────────────────────────
-  // Indicator is now ACTIVE — must rebuild so CB_THON can see it.
   const newVersion = await rebuildManifest(xa_code, yearNum);
 
   return successResponse(res, {
     chi_so_id,
     status:           INDICATOR_STATUS.ACTIVE,
     manifest_version: newVersion,
-    message:          "Chỉ số đã được duyệt và manifest đã được cập nhật.",
+    message:          "Chỉ số đã được duyệt và kích hoạt.",
   });
 }
 
-// ============================================================
-// INTERNAL HELPERS
-// ============================================================
+// ── REJECT INDICATOR (PENDING → REJECTED) ────────────────────
 
-/**
- * Normalize and sanitize the validation object.
- * Removes min/max for non-numeric types.
- */
-function _normalizeValidation(validation, kieu_du_lieu) {
-  if (!validation || typeof validation !== "object") {
-    return { required: true };
+async function rejectIndicator(req, res) {
+  const user = await validateToken(req);
+  const { xa_code, year, chi_so_id, rejection_reason } = req.body;
+  const yearNum = Number(year);
+
+  if (!xa_code || !chi_so_id)
+    return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu xa_code hoặc chi_so_id");
+
+  const indRef  = db.collection(`communes/${xa_code}/indicators`).doc(chi_so_id);
+  const indSnap = await indRef.get();
+
+  if (!indSnap.exists)
+    return errorResponse(res, ERROR_CODES.DATA_005, `Chỉ số ${chi_so_id} không tồn tại`);
+
+  const indicator = indSnap.data();
+
+  checkPermission(user, ACTIONS.REJECT_INDICATOR, { nhanh: indicator.nhanh });
+
+  if (indicator.status !== INDICATOR_STATUS.PENDING) {
+    return errorResponse(res, ERROR_CODES.DATA_005,
+      `Chỉ có thể từ chối indicator ở trạng thái PENDING (hiện tại: ${indicator.status})`);
   }
 
-  const result = {
-    required: validation.required !== false, // default true
-  };
+  const now = serverTimestamp();
+  await indRef.update({
+    status:           INDICATOR_STATUS.REJECTED,
+    rejected_by:      user.user_id || user.id,
+    rejected_at:      now,
+    rejection_reason: rejection_reason ? rejection_reason.trim() : null,
+    updated_at:       now,
+  });
 
+  await logAudit(user, ACTIONS.REJECT_INDICATOR, {
+    xa_code, year: yearNum, chi_so_id,
+    rejection_reason: rejection_reason || null,
+  }, req);
+
+  return successResponse(res, {
+    chi_so_id,
+    status:  INDICATOR_STATUS.REJECTED,
+    message: "Đã từ chối. CB chuyên môn sẽ chỉnh sửa và gửi lại.",
+  });
+}
+
+// ── INTERNAL HELPERS ──────────────────────────────────────────
+
+function _normalizeValidation(validation, kieu_du_lieu) {
+  if (!validation || typeof validation !== "object") return { required: true };
+  const result = { required: validation.required !== false };
   if (kieu_du_lieu === "so") {
     if (validation.min !== undefined) result.min = Number(validation.min);
     if (validation.max !== undefined) result.max = Number(validation.max);
   }
-
   return result;
 }
 
-module.exports = { createIndicator, approveIndicator };
+module.exports = { createIndicator, submitIndicator, approveIndicator, rejectIndicator };

@@ -70,54 +70,90 @@ function unwrap(result, fallbackMessage = "Lỗi không xác định") {
 // ─── Auth endpoints ────────────────────────────────────────────
 
 export async function login({ user_id, password, xa_code, year }) {
-  const result = await post("/login", { user_id, password, xa_code, year });
-  return unwrap(result, "Đăng nhập thất bại");
+  return unwrap(await post("/login", { user_id, password, xa_code, year }), "Đăng nhập thất bại");
 }
 
 export async function logout({ token, user_id, xa_code, year }) {
-  const result = await post("/logout", { token, user_id, xa_code, year });
-  return unwrap(result, "Đăng xuất thất bại");
+  return unwrap(await post("/logout", { token, user_id, xa_code, year }), "Đăng xuất thất bại");
 }
 
 export async function pullManifest({ token, user_id, xa_code, year, current_version }) {
-  const result = await post("/pull_manifest", {
-    token, user_id, xa_code, year, current_version,
-  });
-  return unwrap(result, "Không lấy được danh sách công việc");
+  return unwrap(
+    await post("/pull_manifest", { token, user_id, xa_code, year, current_version }),
+    "Không lấy được danh sách công việc"
+  );
 }
 
-// ─── Data endpoints ────────────────────────────────────────────
+// ─── Data endpoints (CB_THON) ──────────────────────────────────
 
 export async function pushData({ token, user_id, xa_code, year, manifest_version_used, submissions }) {
-  const result = await post("/push_data", {
-    token, user_id, xa_code, year, manifest_version_used, submissions,
-  });
-  return unwrap(result, "Gửi số liệu thất bại");
+  return unwrap(
+    await post("/push_data", { token, user_id, xa_code, year, manifest_version_used, submissions }),
+    "Gửi số liệu thất bại"
+  );
 }
 
-// FIX: removed duplicate, dùng updated_values (đúng field name backend)
 export async function resubmitData({ token, user_id, xa_code, submission_id, updated_values }) {
-  const result = await post("/resubmit_data", {
-    token, user_id, xa_code, submission_id, updated_values,
-  });
-  return unwrap(result, "Gửi lại thất bại");
+  return unwrap(
+    await post("/resubmit_data", { token, user_id, xa_code, submission_id, updated_values }),
+    "Gửi lại thất bại"
+  );
+}
+
+// ─── Indicator endpoints (CB_CM / LANH_DAO) ────────────────────
+
+export async function createIndicator({
+  token, user_id, xa_code, year,
+  ten_chi_so, kieu_du_lieu, linh_vuc,
+  don_vi_do, mo_ta, validation,
+}) {
+  return unwrap(
+    await post("/create_indicator", {
+      token, user_id, xa_code, year,
+      ten_chi_so, kieu_du_lieu, linh_vuc,
+      don_vi_do, mo_ta, validation,
+    }),
+    "Tạo chỉ số thất bại"
+  );
+}
+
+export async function submitIndicator({ token, user_id, xa_code, year, chi_so_id }) {
+  return unwrap(
+    await post("/submit_indicator", { token, user_id, xa_code, year, chi_so_id }),
+    "Gửi duyệt thất bại"
+  );
+}
+
+export async function approveIndicator({ token, user_id, xa_code, year, chi_so_id }) {
+  return unwrap(
+    await post("/approve_indicator", { token, user_id, xa_code, year, chi_so_id }),
+    "Duyệt chỉ số thất bại"
+  );
+}
+
+export async function rejectIndicator({ token, user_id, xa_code, year, chi_so_id, rejection_reason }) {
+  return unwrap(
+    await post("/reject_indicator", { token, user_id, xa_code, year, chi_so_id, rejection_reason }),
+    "Từ chối chỉ số thất bại"
+  );
 }
 
 // ─── Verify endpoints ──────────────────────────────────────────
 
-// FIX: nhận "comment" (screens gửi comment), forward đúng tên sang backend
 export async function verifyData({
   token, user_id, xa_code,
   submission_id, verify_mode, decision,
   indicator_reviews, comment,
 }) {
-  const result = await post("/verify_data", {
-    token, user_id, xa_code,
-    submission_id, verify_mode, decision,
-    indicator_reviews,
-    comment,  // backend nhận cả "comment" và "verify_comment"
-  });
-  return unwrap(result, "Xét duyệt thất bại");
+  return unwrap(
+    await post("/verify_data", {
+      token, user_id, xa_code,
+      submission_id, verify_mode, decision,
+      indicator_reviews,
+      comment,
+    }),
+    "Xét duyệt thất bại"
+  );
 }
 
 // ─── Dashboard endpoint ────────────────────────────────────────
@@ -125,6 +161,13 @@ export async function verifyData({
 export async function getDashboard({ token, user_id, xa_code, year, req_id }) {
   const params = { token, user_id, xa_code, year };
   if (req_id) params.req_id = req_id;
-  const result = await get("/dashboard", params);
-  return unwrap(result, "Không lấy được dashboard");
+  return unwrap(await get("/dashboard", params), "Không lấy được dashboard");
+}
+
+// ─── Report endpoint ───────────────────────────────────────────
+
+export async function getReportData({ token, user_id, xa_code, year, compare_year }) {
+  const params = { token, user_id, xa_code, year };
+  if (compare_year) params.compare_year = compare_year;
+  return unwrap(await get("/report_data", params), "Không lấy được số liệu");
 }
