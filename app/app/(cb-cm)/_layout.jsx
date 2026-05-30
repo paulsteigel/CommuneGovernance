@@ -49,25 +49,17 @@ export default function CbCmLayout() {
         }}
       />
       {/*
-        Hidden screens — must use the EXACT route segment name.
-        "verify/[subId]" targets app/(cb-cm)/verify/[subId].jsx
-        "indicator-create" targets app/(cb-cm)/indicator-create.jsx
-        tabBarButton: () => null removes the button completely from the tab bar.
-        href: null prevents it from being a tappable tab link.
+        Hidden screens — href: null ẩn khỏi tab bar, vẫn navigate được bằng router.push.
+        name phải khớp chính xác đường dẫn file tương đối từ group này.
+        KHÔNG dùng tabBarButton: () => null — react-navigation 7 crash khi nhận null.
       */}
       <Tabs.Screen
-        name="verify/[subId]"
-        options={{
-          href: null,
-          tabBarButton: () => null,
-        }}
+        name="indicator-create"
+        options={{ href: null }}
       />
       <Tabs.Screen
-        name="indicator-create"
-        options={{
-          href: null,
-          tabBarButton: () => null,
-        }}
+        name="verify/[subId]"
+        options={{ href: null }}
       />
     </Tabs>
   );

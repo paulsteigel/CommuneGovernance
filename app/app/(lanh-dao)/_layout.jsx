@@ -49,15 +49,12 @@ export default function LanhDaoLayout() {
         }}
       />
       {/*
-        Hidden screen — "verify/[subId]" targets app/(lanh-dao)/verify/[subId].jsx
-        tabBarButton: () => null removes the button completely from the tab bar.
+        Hidden screen — href: null ẩn khỏi tab bar.
+        KHÔNG dùng tabBarButton: () => null — react-navigation 7 crash khi nhận null.
       */}
       <Tabs.Screen
         name="verify/[subId]"
-        options={{
-          href: null,
-          tabBarButton: () => null,
-        }}
+        options={{ href: null }}
       />
     </Tabs>
   );

@@ -40,15 +40,12 @@ export default function CbThonLayout() {
         }}
       />
       {/*
-        Hidden screen — "submit/[reqId]" targets app/(cb-thon)/submit/[reqId].jsx
-        tabBarButton: () => null removes the button completely from the tab bar.
+        Hidden screen — href: null ẩn khỏi tab bar.
+        KHÔNG dùng tabBarButton: () => null — react-navigation 7 crash khi nhận null.
       */}
       <Tabs.Screen
         name="submit/[reqId]"
-        options={{
-          href: null,
-          tabBarButton: () => null,
-        }}
+        options={{ href: null }}
       />
     </Tabs>
   );
