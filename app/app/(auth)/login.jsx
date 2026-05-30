@@ -21,7 +21,7 @@ import LoadingOverlay from "../../components/LoadingOverlay";
 export default function LoginScreen() {
   const setAuth = useAuthStore(s => s.setAuth);
 
-  const [userId,   setUserId]   = useState("");
+  const [identifier, setIdentifier] = useState(""); // phone or user_id
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [loading,  setLoading]  = useState(false);
@@ -29,7 +29,7 @@ export default function LoginScreen() {
 
   async function handleLogin() {
     setError("");
-    if (!userId.trim() || !password) {
+    if (!identifier.trim() || !password) {
       setError("Vui lòng điền đầy đủ thông tin");
       return;
     }
@@ -37,10 +37,14 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       // FIX BUG-A1: chỉ gửi user_id + password, không cần xa_code / year
-      const data = await login({
-        user_id:  userId.trim().toUpperCase(),
-        password,
-      });
+      const cleanId = identifier.trim();
+      // Auto-detect: if starts with 0 or +84 → phone, else → user_id
+      const isPhone = /^(0|\+84)/.test(cleanId);
+      const data = await login(
+        isPhone
+          ? { phone: cleanId, password }
+          : { user_id: cleanId.toUpperCase(), password }
+      );
 
       // FIX BUG-A1: lấy xa_code và year từ manifest trả về
       const manifestUser   = data.manifest?.user   || {};
@@ -109,15 +113,15 @@ export default function LoginScreen() {
 
             {/* User ID */}
             <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Mã cán bộ</Text>
+              <Text style={styles.label}>Số điện thoại / Mã cán bộ</Text>
               <View style={styles.inputWrap}>
-                <Ionicons name="person-outline" size={22} color={COLORS.textSecondary} style={styles.inputIcon} />
+                <Ionicons name="phone-portrait-outline" size={22} color={COLORS.textSecondary} style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Ví dụ: USR_THON01"
-                  value={userId}
-                  onChangeText={setUserId}
-                  autoCapitalize="characters"
+                  placeholder="0912 345 678"
+                  value={identifier}
+                  onChangeText={setIdentifier}
+                  autoCapitalize="none"
                   autoCorrect={false}
                   returnKeyType="next"
                   placeholderTextColor={COLORS.textHint}

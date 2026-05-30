@@ -56,10 +56,11 @@ function verifyPassword(plain, salt, storedHash) {
 
 /**
  * Generate a cryptographically secure session token.
- * @returns {string} - 64-char hex string
+ * @param {number} [bytes=32] - Number of random bytes (default 32 → 64-char hex)
+ * @returns {string} - hex string
  */
-function generateToken() {
-  return crypto.randomBytes(32).toString("hex");
+function generateToken(bytes = 32) {
+  return crypto.randomBytes(bytes).toString("hex");
 }
 
 /**
@@ -79,4 +80,9 @@ module.exports = {
   verifyPassword,
   generateToken,
   tokenExpiresAt,
+  // Convenience: create new salt+hash pair for a plaintext password
+  createPasswordHash: (plain) => {
+    const salt = generateSalt();
+    return { hash: hashPassword(plain, salt), salt };
+  },
 };

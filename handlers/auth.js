@@ -24,26 +24,43 @@ const { ACTIONS, ERROR_CODES, QUOTA }    = require("../utils/constants");
 
 /**
  * POST /login
- * Body: { user_id, password }
- * Body cũ: { user_id, password, xa_code, year } — vẫn tương thích, xa_code/year bị ignore
+ * Body: { user_id, password }         ← existing (backward compatible)
+ *       { phone,   password }         ← new: login bằng số điện thoại
  */
 async function login(req, res) {
-  const { user_id, password } = req.body;
+  const { user_id, phone, password } = req.body;
+  const loginId = (user_id || phone || "").trim();
 
   // ── Input validation ─────────────────────────────────────
-  if (!user_id || !password) {
-    return errorResponse(res, ERROR_CODES.DATA_001,
-      "Thiếu thông tin đăng nhập (user_id, password)");
+  if (!loginId || !password) {
+    return errorResponse(res, ERROR_CODES.AUTH_002,
+      "Vui lòng nhập số điện thoại (hoặc mã cán bộ) và mật khẩu");
   }
 
-  // ── Read user — 1 Firestore read ─────────────────────────
-  const userSnap = await paths.user(user_id).get();
-  if (!userSnap.exists) {
-    return errorResponse(res, ERROR_CODES.AUTH_002, "Sai tên đăng nhập hoặc mật khẩu");
+  // ── Find user: direct doc → fallback phone query ──────────
+  let userSnap = null;
+  const directSnap = await paths.user(loginId).get();
+  if (directSnap.exists) {
+    userSnap = directSnap;
+  } else {
+    const cleanPhone = loginId.replace(/\s/g, "");
+    const phoneQuery = await db.collection("users")
+      .where("phone", "==", cleanPhone)
+      .limit(1)
+      .get();
+    if (!phoneQuery.empty) userSnap = phoneQuery.docs[0];
+  }
+
+  if (!userSnap || !userSnap.exists) {
+    return errorResponse(res, ERROR_CODES.AUTH_002, "Sai thông tin đăng nhập");
   }
 
   const user = { id: userSnap.id, ...userSnap.data() };
 
+  if (user.status === "PENDING_APPROVAL") {
+    return errorResponse(res, ERROR_CODES.AUTH_002,
+      "Tài khoản đang chờ phê duyệt từ Admin xã. Vui lòng liên hệ Admin.");
+  }
   if (user.status !== "ACTIVE") {
     return errorResponse(res, ERROR_CODES.AUTH_002, "Tài khoản đã bị vô hiệu hóa");
   }
@@ -65,7 +82,7 @@ async function login(req, res) {
   const expiresAt = tokenExpiresAt(QUOTA.TOKEN_TTL_DAYS);
 
   // ── Write token — 1 Firestore write ─────────────────────
-  await paths.user(user_id).update({
+  await paths.user(user.id).update({
     session_token:    newToken,
     token_expires_at: expiresAt,
     last_login_at:    serverTimestamp(),

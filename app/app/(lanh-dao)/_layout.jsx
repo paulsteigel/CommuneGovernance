@@ -56,6 +56,10 @@ export default function LanhDaoLayout() {
         name="verify/[subId]"
         options={{ href: null }}
       />
+      <Tabs.Screen
+        name="request-detail/[reqId]"
+        options={{ href: null }}
+      />
     </Tabs>
   );
 }

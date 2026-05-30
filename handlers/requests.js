@@ -1,13 +1,13 @@
 // handlers/requests.js
 "use strict";
 
-const { db, serverTimestamp }            = require("../utils/firestore");
+const { db, paths, serverTimestamp }     = require("../utils/firestore");
 const { rebuildManifest }                = require("../utils/manifest");
 const { validateToken }                  = require("../middleware/validateToken");
 const { checkPermission }                = require("../middleware/checkPermission");
 const { logAudit }                       = require("../middleware/logAudit");
 const { successResponse, errorResponse } = require("../utils/response");
-const { ACTIONS, ERROR_CODES, INDICATOR_STATUS, REQUEST_STATUS } = require("../utils/constants");
+const { ACTIONS, ERROR_CODES, INDICATOR_STATUS, REQUEST_STATUS, SUBMISSION_STATUS } = require("../utils/constants");
 
 /**
  * POST /create_request
@@ -125,3 +125,186 @@ async function createRequest(req, res) {
 }
 
 module.exports = { createRequest };
+
+// ============================================================
+// UPDATE REQUEST STATUS
+//
+// PATCH /update_request_status
+//
+// Body: {
+//   token, user_id, xa_code,
+//   req_id:  string,
+//   action:  "complete" | "cancel" | "exclude_thon",
+//   -- complete:     (no extra fields)
+//   -- cancel:       cancel_reason: string (required)
+//   -- exclude_thon: thon_code: string, reason: string (both required)
+// }
+//
+// Rules:
+//   complete     → ALL thons (minus excluded) must have VERIFIED submission
+//   cancel       → Any status except already COMPLETED/CANCELLED
+//   exclude_thon → Remove a thon and record reason — request stays OPEN/IN_PROGRESS
+//
+// Quota: 3-5 reads + 1-2 writes + rebuildManifest
+// ============================================================
+
+async function updateRequestStatus(req, res) {
+  // ── 1. Auth ───────────────────────────────────────────────
+  const user = await validateToken(req);
+
+  const { xa_code, req_id, action, cancel_reason, thon_code, reason } = req.body;
+
+  if (!xa_code || !req_id || !action) {
+    return errorResponse(res, ERROR_CODES.DATA_001, "Thiếu xa_code, req_id hoặc action");
+  }
+  if (!["complete", "cancel", "exclude_thon"].includes(action)) {
+    return errorResponse(res, ERROR_CODES.DATA_001,
+      "action phải là: complete | cancel | exclude_thon");
+  }
+
+  // ── 2. Fetch request ──────────────────────────────────────
+  const reqRef  = paths.request(xa_code, req_id);
+  const reqSnap = await reqRef.get();
+
+  if (!reqSnap.exists) {
+    return errorResponse(res, ERROR_CODES.REQ_001, `Request ${req_id} không tồn tại`);
+  }
+
+  const reqData = reqSnap.data();
+
+  // ── 3. Guard: already terminal ────────────────────────────
+  if (action !== "exclude_thon" &&
+      (reqData.status === REQUEST_STATUS.COMPLETED ||
+       reqData.status === REQUEST_STATUS.CANCELLED)) {
+    return errorResponse(res, ERROR_CODES.REQ_002,
+      `Request đã ở trạng thái ${reqData.status} — không thể thay đổi`);
+  }
+
+  // ── 4. Permission check ───────────────────────────────────
+  checkPermission(user, ACTIONS.UPDATE_REQUEST_STATUS, { nhanh: reqData.nhanh });
+
+  // ── 5. Branch by action ───────────────────────────────────
+
+  if (action === "cancel") {
+    if (!cancel_reason || !cancel_reason.trim()) {
+      return errorResponse(res, ERROR_CODES.DATA_001,
+        "Lý do hủy (cancel_reason) là bắt buộc");
+    }
+
+    await reqRef.update({
+      status:        REQUEST_STATUS.CANCELLED,
+      cancelled_at:  serverTimestamp(),
+      cancelled_by:  user.user_id || user.id,
+      cancel_reason: cancel_reason.trim(),
+    });
+
+    await logAudit(user, ACTIONS.UPDATE_REQUEST_STATUS,
+      { xa_code, req_id, action: "cancel", cancel_reason }, req);
+
+    const newVersion = await rebuildManifest(xa_code,
+      Number(reqData.year) || new Date().getFullYear());
+
+    return successResponse(res, {
+      req_id,
+      new_status:       REQUEST_STATUS.CANCELLED,
+      manifest_version: newVersion,
+      message:          "Request đã được hủy.",
+    });
+  }
+
+  if (action === "exclude_thon") {
+    if (!thon_code || !reason || !reason.trim()) {
+      return errorResponse(res, ERROR_CODES.DATA_001,
+        "thon_code và reason là bắt buộc khi exclude_thon");
+    }
+
+    const alreadyExcluded = (reqData.excluded_thon || [])
+      .some(e => e.thon_code === thon_code);
+    if (alreadyExcluded) {
+      return errorResponse(res, ERROR_CODES.DATA_001,
+        `Thôn ${thon_code} đã bị loại trước đó`);
+    }
+
+    const newExcluded = [
+      ...(reqData.excluded_thon || []),
+      {
+        thon_code,
+        reason:      reason.trim(),
+        excluded_by: user.user_id || user.id,
+        excluded_at: new Date().toISOString(),
+      },
+    ];
+
+    await reqRef.update({ excluded_thon: newExcluded });
+
+    await logAudit(user, ACTIONS.UPDATE_REQUEST_STATUS,
+      { xa_code, req_id, action: "exclude_thon", thon_code, reason }, req);
+
+    const newVersion = await rebuildManifest(xa_code,
+      Number(reqData.year) || new Date().getFullYear());
+
+    return successResponse(res, {
+      req_id,
+      excluded_thon:    newExcluded,
+      manifest_version: newVersion,
+      message:          `Thôn ${thon_code} đã được loại khỏi yêu cầu.`,
+    });
+  }
+
+  // ── action === "complete" ──────────────────────────────────
+  const year = Number(reqData.year) || new Date().getFullYear();
+
+  const excludedCodes = new Set(
+    (reqData.excluded_thon || []).map(e => e.thon_code)
+  );
+  const requiredThons = (reqData.danh_sach_thon || [])
+    .filter(t => !excludedCodes.has(t));
+
+  if (requiredThons.length === 0) {
+    return errorResponse(res, ERROR_CODES.DATA_001,
+      "Không còn thôn nào trong yêu cầu sau khi loại — không thể hoàn thành");
+  }
+
+  // Fetch all submissions for this request
+  const subsSnap = await paths.submissions(xa_code)
+    .where("req_id", "==", req_id)
+    .where("year", "==", year)
+    .get();
+
+  const verifiedThons = new Set(
+    subsSnap.docs
+      .map(d => d.data())
+      .filter(s => s.status === SUBMISSION_STATUS.VERIFIED ||
+                   s.status === "VERIFIED")
+      .map(s => s.thon_code)
+  );
+
+  const missing = requiredThons.filter(t => !verifiedThons.has(t));
+
+  if (missing.length > 0) {
+    return errorResponse(res, ERROR_CODES.REQ_003,
+      `Chưa thể hoàn thành — các thôn chưa được duyệt: ${missing.join(", ")}`);
+  }
+
+  // All thons verified → mark COMPLETED
+  await reqRef.update({
+    status:       REQUEST_STATUS.COMPLETED,
+    published_at: serverTimestamp(),
+    published_by: user.user_id || user.id,
+  });
+
+  await logAudit(user, ACTIONS.UPDATE_REQUEST_STATUS,
+    { xa_code, req_id, action: "complete", thon_count: requiredThons.length }, req);
+
+  const newVersion = await rebuildManifest(xa_code, year);
+
+  return successResponse(res, {
+    req_id,
+    new_status:       REQUEST_STATUS.COMPLETED,
+    manifest_version: newVersion,
+    verified_thons:   [...verifiedThons],
+    message:          "Kết quả đã được hoàn thành và công bố.",
+  });
+}
+
+module.exports = { createRequest, updateRequestStatus };

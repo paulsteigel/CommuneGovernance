@@ -123,12 +123,19 @@ export default function LanhDaoDashboard() {
     );
   }
 
-  // ── Render: request progress card ────────────────────────
+  // ── Render: request progress card (tappable → detail) ─────
   function renderProgress({ item }) {
     const pct      = item.completion_pct || 0;
     const barColor = pct === 100 ? COLORS.primary : pct > 50 ? "#F59E0B" : COLORS.accent;
     return (
-      <View style={[styles.progressCard, item.overdue && styles.progressCardOverdue]}>
+      <TouchableOpacity
+        style={[styles.progressCard, item.overdue && styles.progressCardOverdue]}
+        onPress={() => router.push({
+          pathname: "/(lanh-dao)/request-detail/[reqId]",
+          params:   { reqId: item.req_id || item.id },
+        })}
+        activeOpacity={0.85}
+      >
         <View style={styles.progressTop}>
           <Text style={styles.reqTitle} numberOfLines={2}>{item.tieu_de}</Text>
           <StatusBadge status={item.req_status} size="small" />
@@ -164,7 +171,10 @@ export default function LanhDaoDashboard() {
             <Text style={styles.overdueText}>Quá hạn · {item.deadline}</Text>
           </View>
         )}
-      </View>
+        <View style={styles.tapHint}>
+          <Text style={styles.tapHintText}>Nhấn để xem chi tiết →</Text>
+        </View>
+      </TouchableOpacity>
     );
   }
 
@@ -321,4 +331,6 @@ const styles = StyleSheet.create({
   missingText:         { ...TYPOGRAPHY.caption, color: COLORS.accent, flex: 1 },
   overdueBadge:        { flexDirection: "row", alignItems: "center", gap: SPACING.xs, backgroundColor: COLORS.dangerBg, borderRadius: RADIUS.sm, padding: SPACING.sm },
   overdueText:         { ...TYPOGRAPHY.caption, color: COLORS.danger },
+  tapHint:             { alignItems: "flex-end" },
+  tapHintText:         { ...TYPOGRAPHY.caption, color: COLORS.textHint, fontStyle: "italic" },
 });

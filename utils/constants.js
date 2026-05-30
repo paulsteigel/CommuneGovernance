@@ -20,15 +20,21 @@ const ACTIONS = {
   PULL_MANIFEST:          "pull_manifest",
   PUSH_DATA:              "push_data",
   CREATE_INDICATOR:       "create_indicator",
-  SUBMIT_INDICATOR:       "submit_indicator",   // DRAFT → PENDING (CB_CM)
-  APPROVE_INDICATOR:      "approve_indicator",  // PENDING → ACTIVE (LANH_DAO)
-  REJECT_INDICATOR:       "reject_indicator",   // PENDING → REJECTED (LANH_DAO)
+  SUBMIT_INDICATOR:       "submit_indicator",
+  APPROVE_INDICATOR:      "approve_indicator",
+  REJECT_INDICATOR:       "reject_indicator",
   CREATE_REQUEST:         "create_request",
+  UPDATE_REQUEST_STATUS:  "update_request_status", // complete | cancel | exclude_thon
   VERIFY_DATA:            "verify_data",
   VERIFY_DATA_RESUBMIT:   "verify_data_resubmit",
   GET_DASHBOARD:          "get_dashboard",
   GET_REPORT_DATA:        "get_report_data",
   SYNC_SHEETS:            "sync_sheets",
+  // Admin
+  ADMIN_CREATE_INVITE:    "admin_create_invite_link",
+  ADMIN_APPROVE_USER:     "admin_approve_user",
+  ADMIN_LIST_PENDING:     "admin_list_pending_users",
+  ADMIN_RESET_PASSWORD:   "admin_reset_password",
 };
 
 const SUBMISSION_STATUS = {
@@ -49,7 +55,12 @@ const ERROR_CODES = {
   DATA_003: "DATA_003",
   DATA_004: "DATA_004",
   DATA_005: "DATA_005",
-  DATA_006: "DATA_006", // Duplicate indicator name+unit
+  DATA_006: "DATA_006",
+  REQ_001:  "REQ_001",  // Request not found
+  REQ_002:  "REQ_002",  // Request already completed/cancelled
+  REQ_003:  "REQ_003",  // Not all thons verified — cannot complete
+  INV_001:  "INV_001",  // Invite link expired or inactive
+  INV_002:  "INV_002",  // User already exists with this phone/CCCD
   SYNC_001: "SYNC_001",
   SYS_001:  "SYS_001",
 };
@@ -197,6 +208,34 @@ const PERMISSION_MATRIX = {
 
   [ACTIONS.GET_REPORT_DATA]: {
     allowedRoles: [ROLES.ADMIN, ROLES.LANH_DAO, ROLES.CB_CHUYEN_MON, ROLES.CB_THON],
+    scopeCheck: null,
+  },
+
+  [ACTIONS.UPDATE_REQUEST_STATUS]: {
+    allowedRoles: [ROLES.ADMIN, ROLES.LANH_DAO],
+    scopeCheck: (user, scope) => {
+      if (user.vai_tro === ROLES.ADMIN) return;
+      _checkNhanh(user, scope);
+    },
+  },
+
+  [ACTIONS.ADMIN_CREATE_INVITE]: {
+    allowedRoles: [ROLES.ADMIN],
+    scopeCheck: null,
+  },
+
+  [ACTIONS.ADMIN_APPROVE_USER]: {
+    allowedRoles: [ROLES.ADMIN],
+    scopeCheck: null,
+  },
+
+  [ACTIONS.ADMIN_LIST_PENDING]: {
+    allowedRoles: [ROLES.ADMIN],
+    scopeCheck: null,
+  },
+
+  [ACTIONS.ADMIN_RESET_PASSWORD]: {
+    allowedRoles: [ROLES.ADMIN],
     scopeCheck: null,
   },
 };

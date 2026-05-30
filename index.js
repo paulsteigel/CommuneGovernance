@@ -8,7 +8,8 @@ const { asyncHandler }  = require("./utils/response");
 const authHandler       = require("./handlers/auth");
 
 let dataHandler, indicatorsHandler, requestsHandler,
-    verifyHandler, dashboardHandler, syncHandler, reportHandler;
+    verifyHandler, dashboardHandler, syncHandler, reportHandler,
+    publicHandler, adminHandler;
 
 const app = express();
 
@@ -68,6 +69,11 @@ app.post("/create_request", asyncHandler(async (req, res) => {
   return requestsHandler.createRequest(req, res);
 }));
 
+app.patch("/update_request_status", asyncHandler(async (req, res) => {
+  if (!requestsHandler) requestsHandler = require("./handlers/requests");
+  return requestsHandler.updateRequestStatus(req, res);
+}));
+
 // ── Verify ────────────────────────────────────────────────────
 app.post("/verify_data", asyncHandler(async (req, res) => {
   if (!verifyHandler) verifyHandler = require("./handlers/verify");
@@ -95,6 +101,39 @@ app.post("/sync_to_sheets", asyncHandler(async (req, res) => {
   }
   if (!syncHandler) syncHandler = require("./handlers/sync");
   return syncHandler.syncToSheets(req, res);
+}));
+
+// ── Public (no auth) ──────────────────────────────────────────
+app.get("/public/xa/:xa_code/results", asyncHandler(async (req, res) => {
+  if (!publicHandler) publicHandler = require("./handlers/public");
+  return publicHandler.getPublicResults(req, res);
+}));
+
+// ── Registration (public — uses invite link) ──────────────────
+app.post("/register", asyncHandler(async (req, res) => {
+  if (!adminHandler) adminHandler = require("./handlers/admin");
+  return adminHandler.register(req, res);
+}));
+
+// ── Admin ─────────────────────────────────────────────────────
+app.post("/admin/create_invite_link", asyncHandler(async (req, res) => {
+  if (!adminHandler) adminHandler = require("./handlers/admin");
+  return adminHandler.createInviteLink(req, res);
+}));
+
+app.post("/admin/list_pending_users", asyncHandler(async (req, res) => {
+  if (!adminHandler) adminHandler = require("./handlers/admin");
+  return adminHandler.listPendingUsers(req, res);
+}));
+
+app.post("/admin/approve_user", asyncHandler(async (req, res) => {
+  if (!adminHandler) adminHandler = require("./handlers/admin");
+  return adminHandler.approveUser(req, res);
+}));
+
+app.post("/admin/reset_password", asyncHandler(async (req, res) => {
+  if (!adminHandler) adminHandler = require("./handlers/admin");
+  return adminHandler.resetPassword(req, res);
 }));
 
 app.use((_req, res) => {

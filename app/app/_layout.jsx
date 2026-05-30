@@ -45,8 +45,10 @@ function AuthGuard({ children }) {
         router.replace("/(cb-thon)/");
       } else if (role === ROLES.CB_CHUYEN_MON) {
         router.replace("/(cb-cm)/");
-      } else if (role === ROLES.LANH_DAO || role === ROLES.ADMIN) {
+      } else if (role === ROLES.LANH_DAO) {
         router.replace("/(lanh-dao)/");
+      } else if (role === ROLES.ADMIN) {
+        router.replace("/(admin)/");
       } else {
         router.replace("/(auth)/login");
       }
@@ -83,6 +85,7 @@ export default function RootLayout() {
             <Stack.Screen name="(cb-thon)"   options={{ headerShown: false }} />
             <Stack.Screen name="(cb-cm)"     options={{ headerShown: false }} />
             <Stack.Screen name="(lanh-dao)"  options={{ headerShown: false }} />
+            <Stack.Screen name="(admin)"     options={{ headerShown: false }} />
           </Stack>
         </AuthGuard>
       </PaperProvider>

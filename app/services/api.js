@@ -160,3 +160,95 @@ export async function getReportData({ token, user_id, xa_code, year, compare_yea
   if (compare_year) params.compare_year = compare_year;
   return unwrap(await get("/report_data", params), "Không lấy được số liệu");
 }
+// ─── Request Status ────────────────────────────────────────────
+
+/**
+ * Complete a request — all thons must be VERIFIED.
+ * action: "complete" | "cancel" | "exclude_thon"
+ */
+export async function updateRequestStatus({
+  token, user_id, xa_code,
+  req_id, action,
+  cancel_reason, thon_code, reason,
+}) {
+  return unwrap(
+    await request("/update_request_status", {
+      method: "PATCH",
+      body: JSON.stringify({
+        token, user_id, xa_code,
+        req_id, action,
+        ...(cancel_reason !== undefined && { cancel_reason }),
+        ...(thon_code      !== undefined && { thon_code }),
+        ...(reason         !== undefined && { reason }),
+      }),
+    }),
+    "Cập nhật trạng thái thất bại"
+  );
+}
+
+// ─── Public results (no auth) ─────────────────────────────────
+
+export async function getPublicResults({ xa_code, year, nhanh }) {
+  const params = {};
+  if (year)  params.year  = year;
+  if (nhanh) params.nhanh = nhanh;
+  return unwrap(
+    await get(`/public/xa/${xa_code}/results`, params),
+    "Không lấy được kết quả công khai"
+  );
+}
+
+// ─── Register / Admin ─────────────────────────────────────────
+
+export async function registerUser({
+  link_token, ho_ten, phone, cccd, email, chuc_danh, password,
+}) {
+  return unwrap(
+    await post("/register", {
+      link_token, ho_ten, phone, cccd, email, chuc_danh, password,
+    }),
+    "Đăng ký thất bại"
+  );
+}
+
+export async function createInviteLink({ token, user_id, xa_code }) {
+  return unwrap(
+    await post("/admin/create_invite_link", { token, user_id, xa_code }),
+    "Tạo link thất bại"
+  );
+}
+
+export async function listPendingUsers({ token, user_id, xa_code }) {
+  return unwrap(
+    await post("/admin/list_pending_users", { token, user_id, xa_code }),
+    "Không lấy được danh sách chờ"
+  );
+}
+
+export async function approveUser({
+  token, user_id, xa_code,
+  target_user_id, vai_tro, nhanh, don_vi, linh_vuc_codes, other_branches,
+}) {
+  return unwrap(
+    await post("/admin/approve_user", {
+      token, user_id, xa_code,
+      target_user_id, vai_tro, nhanh, don_vi,
+      linh_vuc_codes: linh_vuc_codes || [],
+      other_branches: other_branches || [],
+    }),
+    "Phê duyệt thất bại"
+  );
+}
+
+export async function resetPassword({
+  token, user_id, xa_code,
+  target_user_id, verify_phone, verify_cccd, new_password,
+}) {
+  return unwrap(
+    await post("/admin/reset_password", {
+      token, user_id, xa_code,
+      target_user_id, verify_phone, verify_cccd, new_password,
+    }),
+    "Đặt lại mật khẩu thất bại"
+  );
+}

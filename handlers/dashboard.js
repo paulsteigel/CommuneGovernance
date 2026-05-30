@@ -139,11 +139,32 @@ async function getDashboard(req, res) {
 
     const overdue = request.deadline < today && verifiedThon < totalThon;
 
+    // Per-thon detail (only when req_id filter — richer but more data)
+    const thon_progress = req_id
+      ? (request.danh_sach_thon || []).map(thon_code => {
+          const sub = subs.find(s => s.thon_code === thon_code);
+          const isExcluded = (request.excluded_thon || []).some(e => e.thon_code === thon_code);
+          return {
+            thon_code,
+            status:       isExcluded ? "excluded" : (sub?.status || "not_submitted"),
+            submitted_by: sub?.submitted_by || null,
+            verified_by:  sub?.reviewed_by  || null,
+            submitted_at: sub?.submitted_at
+              ? (sub.submitted_at.toDate ? sub.submitted_at.toDate().toISOString() : sub.submitted_at)
+              : null,
+          };
+        })
+      : undefined;
+
     return {
       req_id:          request.req_id,
       tieu_de:         request.tieu_de,
+      nhanh:           request.nhanh,
       deadline:        request.deadline,
       req_status:      request.status,
+      chi_so_ids:      request.chi_so_ids || [],
+      danh_sach_thon:  request.danh_sach_thon || [],
+      excluded_thon:   request.excluded_thon || [],
       total_thon:      totalThon,
       submitted_thon:  submittedThons.size,
       verified_thon:   verifiedThon,
@@ -151,10 +172,10 @@ async function getDashboard(req, res) {
       completion_pct:  completionPct,
       overdue,
       needs_attention: needsAttention,
-      // Which thons haven't submitted yet (useful for follow-up)
       missing_thons: request.danh_sach_thon
         ? request.danh_sach_thon.filter(t => !submittedThons.has(t))
         : [],
+      ...(thon_progress !== undefined && { thon_progress }),
     };
   });
 
@@ -182,6 +203,11 @@ async function getDashboard(req, res) {
     generated_at: new Date().toISOString(),
     requests:     requestSummaries,
     summary,
+    // When req_id filter: include single request detail for request-detail screen
+    ...(req_id && requestSummaries.length > 0 && {
+      request: requestSummaries[0],
+      thon_progress: requestSummaries[0].thon_progress,
+    }),
   });
 }
 
