@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * seed_test_data.js — Reset & seed all Firestore test data
- * v3: simpler user_ids (thon01/cbcm01/lanhdao), phone login, abc123 password
+ * v3: simpler user_ids (thon01/cbcm01/lanhdao), phone login, Abc password
  * Usage: node tests/seed_test_data.js
  */
 "use strict";
@@ -269,13 +269,13 @@ async function seed() {
   await batch.commit();
 
   console.log("====================================================");
-  console.log("  DONE — Dang nhap bang so dien thoai + abc123");
+  console.log("  DONE — Dang nhap bang so dien thoai + Abc");
   console.log("====================================================");
   console.log("");
-  console.log("  Truong thon  ->  0901000001  /  abc123  (thon01)");
-  console.log("  Can bo CM    ->  0901000002  /  abc123  (cbcm01)");
-  console.log("  Lanh dao     ->  0901000003  /  abc123  (lanhdao)");
-  console.log("  Admin        ->  0901000004  /  abc123  (admin01)");
+  console.log("  Truong thon  ->  0901000001  /  Abc  (thon01)");
+  console.log("  Can bo CM    ->  0901000002  /  Abc  (cbcm01)");
+  console.log("  Lanh dao     ->  0901000003  /  Abc  (lanhdao)");
+  console.log("  Admin        ->  0901000004  /  Abc  (admin01)");
   console.log("");
   console.log("  Public URL (kiem tra sau deploy):");
   console.log("  GET https://careapi-cx7avsd4pa-as.a.run.app/public/xa/XATEST/results");
