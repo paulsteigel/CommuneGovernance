@@ -1,8 +1,16 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Default: deny everything (backend uses Admin SDK — bypasses all rules)
     match /{document=**} {
       allow read, write: if false;
+    }
+
+    // invite_links: public read so /register can validate token without auth.
+    // Write always via Admin SDK (bypasses rules).
+    match /invite_links/{linkId} {
+      allow read: if true;
     }
   }
 }
