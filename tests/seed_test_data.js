@@ -21,8 +21,8 @@ function hashPassword(p, s) { return crypto.createHash("sha256").update(p + s).d
 function generateToken()    { return crypto.randomBytes(32).toString("hex"); }
 
 const XA_CODE = "XATEST";
-const YEAR    = 2025;
-const PASS    = "abc123";
+const YEAR    = 2026;
+const PASS    = "Abc";
 
 const USERS = [
   {
@@ -91,7 +91,7 @@ async function deleteCollection(collRef) {
 async function seed() {
   console.log("\n====================================================");
   console.log("  Seeding Firestore test data  v3");
-  console.log("  Xa: " + XA_CODE + "  |  Nam: " + YEAR + "  |  Pass: " + PASS);
+  console.log("  Xa: " + XA_CODE + "  |  Nam: " + YEAR + "  |  Pass: " + PASS + "  (cap A)");
   console.log("====================================================\n");
 
   const now       = Timestamp.now();

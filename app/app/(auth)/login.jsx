@@ -43,7 +43,7 @@ export default function LoginScreen() {
       const data = await login(
         isPhone
           ? { phone: cleanId, password }
-          : { user_id: cleanId.toUpperCase(), password }
+          : { user_id: cleanId, password }
       );
 
       // FIX BUG-A1: lấy xa_code và year từ manifest trả về
@@ -55,7 +55,7 @@ export default function LoginScreen() {
 
       // FIX BUG-A2: lưu ho_ten (không phải ten)
       const user = {
-        user_id:        manifestUser.user_id        || userId.trim().toUpperCase(),
+        user_id:        manifestUser.user_id        || identifier.trim(),
         ho_ten:         manifestUser.ho_ten,
         vai_tro:        manifestUser.vai_tro,
         don_vi:         manifestUser.don_vi,
