@@ -1,10 +1,14 @@
 // app/(cb-cm)/indicator-create.jsx
 // Tạo mới hoặc chỉnh sửa chỉ số (DRAFT/REJECTED only).
-// Realtime duplicate warning khi nhập tên + đơn vị.
+//
+// FIX: sau createIndicator thành công, optimistic-add indicator mới vào
+//      manifest.my_indicators cục bộ (AsyncStorage + Zustand).
+//      Không gọi thêm pullManifest → 0 Firestore reads tiêu thêm.
+//      User quay lại tab Chỉ số thấy ngay chỉ số mới với status DRAFT.
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo } from "react";
 import {
-  View, Text, TextInput, TouchableOpacity, Switch,
+  View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, Alert, KeyboardAvoidingView, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -37,34 +41,38 @@ function normStr(s) {
 export default function IndicatorCreate() {
   const { edit_id } = useLocalSearchParams();
   const router      = useRouter();
-  const { user, manifest, xa_code, year, token } = useAuthStore();
 
-  // If editing, find existing indicator from manifest
+  const { user, manifest, xa_code, year, token } = useAuthStore();
+  // updateManifest ghi trực tiếp vào AsyncStorage + Zustand — không tốn read
+  const updateManifest = useAuthStore(s => s.updateManifest);
+
   const existing = useMemo(() => {
     if (!edit_id) return null;
     return (manifest?.my_indicators || []).find(i => i.chi_so_id === edit_id) || null;
   }, [edit_id, manifest]);
 
-  // Default linh_vuc to first in user's allowed list
   const allowedLv = user?.linh_vuc_codes || [];
   const defaultLv = allowedLv[0] || LINH_VUC_OPTIONS[0].key;
 
-  const [tenChiSo,  setTenChiSo]  = useState(existing?.ten_chi_so  || "");
-  const [donViDo,   setDonViDo]   = useState(existing?.don_vi_do   || "");
-  const [kieuDuLieu,setKieuDuLieu]= useState(existing?.kieu_du_lieu || "so");
-  const [linhVuc,   setLinhVuc]   = useState(existing?.linh_vuc     || defaultLv);
-  const [moTa,      setMoTa]      = useState(existing?.mo_ta        || "");
-  const [valMin,    setValMin]    = useState(existing?.validation?.min !== undefined ? String(existing.validation.min) : "");
-  const [valMax,    setValMax]    = useState(existing?.validation?.max !== undefined ? String(existing.validation.max) : "");
-  const [loading,   setLoading]   = useState(false);
+  const [tenChiSo,   setTenChiSo]   = useState(existing?.ten_chi_so  || "");
+  const [donViDo,    setDonViDo]    = useState(existing?.don_vi_do   || "");
+  const [kieuDuLieu, setKieuDuLieu] = useState(existing?.kieu_du_lieu || "so");
+  const [linhVuc,    setLinhVuc]    = useState(existing?.linh_vuc    || defaultLv);
+  const [moTa,       setMoTa]       = useState(existing?.mo_ta       || "");
+  const [valMin,     setValMin]     = useState(
+    existing?.validation?.min !== undefined ? String(existing.validation.min) : ""
+  );
+  const [valMax,     setValMax]     = useState(
+    existing?.validation?.max !== undefined ? String(existing.validation.max) : ""
+  );
+  const [loading, setLoading] = useState(false);
 
-  // Realtime duplicate warning against ACTIVE indicators in manifest
   const duplicateWarning = useMemo(() => {
     if (!tenChiSo.trim()) return null;
     const nameNorm = normStr(tenChiSo);
     const unitNorm = normStr(donViDo);
     const dupe = (manifest?.indicators || []).find(ind => {
-      if (ind.chi_so_id === edit_id) return false; // skip self
+      if (ind.chi_so_id === edit_id) return false;
       return normStr(ind.ten_chi_so) === nameNorm &&
              normStr(ind.don_vi_do || "") === unitNorm;
     });
@@ -94,7 +102,7 @@ export default function IndicatorCreate() {
   async function doSave() {
     setLoading(true);
     try {
-      const body = {
+      const result = await createIndicator({
         token, user_id: user.user_id, xa_code, year,
         ten_chi_so:   tenChiSo.trim(),
         don_vi_do:    donViDo.trim() || null,
@@ -106,13 +114,36 @@ export default function IndicatorCreate() {
           ...(kieuDuLieu === "so" && valMin !== "" && { min: Number(valMin) }),
           ...(kieuDuLieu === "so" && valMax !== "" && { max: Number(valMax) }),
         },
+      });
+
+      // ── Optimistic local update ────────────────────────────────
+      // Backend trả { chi_so_id, status: "DRAFT" }.
+      // Append vào manifest.my_indicators cục bộ → tab Chỉ số thấy ngay.
+      // Dùng getState() để tránh stale closure trong async callback.
+      const currentManifest = useAuthStore.getState().manifest;
+      const newInd = {
+        chi_so_id:        result.chi_so_id,
+        ten_chi_so:       tenChiSo.trim(),
+        don_vi_do:        donViDo.trim() || null,
+        kieu_du_lieu:     kieuDuLieu,
+        linh_vuc:         linhVuc,
+        mo_ta:            moTa.trim() || null,
+        status:           "DRAFT",
+        rejection_reason: null,
+        created_at:       new Date().toISOString(),
+        updated_at:       new Date().toISOString(),
       };
+      await updateManifest({
+        ...currentManifest,
+        my_indicators: [...(currentManifest?.my_indicators || []), newInd],
+      });
+      // ─────────────────────────────────────────────────────────
 
-      await createIndicator(body);
-
-      Alert.alert("Đã lưu ✓", "Chỉ số đã tạo ở trạng thái Nháp. Bấm 'Gửi duyệt' khi hoàn chỉnh.", [
-        { text: "OK", onPress: () => router.back() },
-      ]);
+      Alert.alert(
+        "Đã lưu ✓",
+        "Chỉ số đã tạo ở trạng thái Nháp. Vào tab Chỉ số → bấm 'Gửi duyệt' khi hoàn chỉnh.",
+        [{ text: "OK", onPress: () => router.back() }]
+      );
     } catch (err) {
       Alert.alert("Lỗi", err.message);
     } finally {
@@ -139,11 +170,12 @@ export default function IndicatorCreate() {
             {isEditingActive && (
               <View style={styles.warningBanner}>
                 <Ionicons name="warning-outline" size={16} color="#92400E" />
-                <Text style={styles.warningText}>Chỉ số đang ở trạng thái {existing.status} — một số trường không thể sửa.</Text>
+                <Text style={styles.warningText}>
+                  Chỉ số đang ở trạng thái {existing.status} — một số trường không thể sửa.
+                </Text>
               </View>
             )}
 
-            {/* Tên chỉ số */}
             <Text style={styles.label}>Tên chỉ số <Text style={styles.required}>*</Text></Text>
             <TextInput
               style={[styles.input, duplicateWarning && styles.inputWarn]}
@@ -153,8 +185,6 @@ export default function IndicatorCreate() {
               onChangeText={setTenChiSo}
               editable={!isEditingActive}
             />
-
-            {/* Duplicate warning */}
             {duplicateWarning && (
               <View style={styles.dupWarn}>
                 <Ionicons name="alert-circle-outline" size={14} color="#92400E" />
@@ -162,7 +192,6 @@ export default function IndicatorCreate() {
               </View>
             )}
 
-            {/* Đơn vị đo */}
             <Text style={styles.label}>Đơn vị đo</Text>
             <TextInput
               style={styles.input}
@@ -173,7 +202,6 @@ export default function IndicatorCreate() {
               editable={!isEditingActive}
             />
 
-            {/* Kiểu dữ liệu */}
             <Text style={styles.label}>Kiểu dữ liệu <Text style={styles.required}>*</Text></Text>
             <View style={styles.optionGroup}>
               {KIEU_OPTIONS.map(opt => (
@@ -193,7 +221,6 @@ export default function IndicatorCreate() {
               ))}
             </View>
 
-            {/* Lĩnh vực */}
             <Text style={styles.label}>Lĩnh vực <Text style={styles.required}>*</Text></Text>
             <View style={styles.linhVucRow}>
               {LINH_VUC_OPTIONS.filter(opt =>
@@ -211,7 +238,6 @@ export default function IndicatorCreate() {
               ))}
             </View>
 
-            {/* Min/Max (so only) */}
             {kieuDuLieu === "so" && (
               <>
                 <Text style={styles.label}>Giới hạn giá trị (tùy chọn)</Text>
@@ -242,7 +268,6 @@ export default function IndicatorCreate() {
               </>
             )}
 
-            {/* Mô tả */}
             <Text style={styles.label}>Mô tả (tùy chọn)</Text>
             <TextInput
               style={[styles.input, styles.inputMultiline]}

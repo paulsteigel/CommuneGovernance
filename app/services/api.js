@@ -1,35 +1,21 @@
 // services/api.js
-// Wrapper gọi tất cả backend endpoints của CommuneGovernance API.
-// Hỗ trợ timeout + offline detection.
-
 import { API_BASE_URL, API_TIMEOUT } from "../constants/config";
-
-// ─── Core fetch wrapper ────────────────────────────────────────
 
 async function request(path, options = {}) {
   const controller = new AbortController();
   const timeoutId  = setTimeout(() => controller.abort(), API_TIMEOUT);
-
   try {
-    const url = `${API_BASE_URL}${path}`;
-    const res  = await fetch(url, {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
       signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     });
-
     clearTimeout(timeoutId);
     const data = await res.json();
     return { ok: res.ok, status: res.status, data };
-
   } catch (err) {
     clearTimeout(timeoutId);
-    if (err.name === "AbortError") {
-      throw new ApiError("TIMEOUT", "Kết nối quá chậm, vui lòng thử lại");
-    }
+    if (err.name === "AbortError") throw new ApiError("TIMEOUT", "Kết nối quá chậm, vui lòng thử lại");
     throw new ApiError("NETWORK", "Không có kết nối mạng");
   }
 }
@@ -43,16 +29,9 @@ function get(path, params = {}) {
   return request(`${path}${qs ? "?" + qs : ""}`, { method: "GET" });
 }
 
-// ─── API Error class ───────────────────────────────────────────
-
 export class ApiError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
+  constructor(code, message) { super(message); this.code = code; }
 }
-
-// ─── Response helper ───────────────────────────────────────────
 
 function unwrap(result, fallbackMessage = "Lỗi không xác định") {
   if (!result.ok || !result.data?.success) {
@@ -96,7 +75,7 @@ export async function resubmitData({ token, user_id, xa_code, submission_id, upd
   );
 }
 
-// ─── Indicators (CB_CM / LANH_DAO) ────────────────────────────
+// ─── Indicators ───────────────────────────────────────────────
 
 export async function createIndicator({
   token, user_id, xa_code, year,
@@ -134,6 +113,21 @@ export async function rejectIndicator({ token, user_id, xa_code, year, chi_so_id
   );
 }
 
+// ─── Requests ─────────────────────────────────────────────────
+
+export async function createRequest({
+  token, user_id, xa_code, year,
+  tieu_de, chi_so_ids, danh_sach_thon, deadline, ghi_chu,
+}) {
+  return unwrap(
+    await post("/create_request", {
+      token, user_id, xa_code, year,
+      tieu_de, chi_so_ids, danh_sach_thon, deadline, ghi_chu,
+    }),
+    "Tạo yêu cầu thất bại"
+  );
+}
+
 // ─── Verify ───────────────────────────────────────────────────
 
 export async function verifyData({
@@ -145,8 +139,7 @@ export async function verifyData({
     await post("/verify_data", {
       token, user_id, xa_code,
       submission_id, verify_mode, decision,
-      indicator_reviews,
-      comment,
+      indicator_reviews, comment,
     }),
     "Xét duyệt thất bại"
   );

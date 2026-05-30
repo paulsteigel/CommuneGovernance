@@ -160,6 +160,10 @@ async function submitIndicator(req, res) {
     xa_code, year: yearNum, chi_so_id, previous_status: ind.status,
   }, req);
 
+  // FIX: rebuild manifest → version tăng → LANH_DAO thấy pending_indicators mới
+  // khi họ pull_manifest lần kế tiếp (1 Firestore write, không tốn read).
+  await rebuildManifest(xa_code, yearNum);
+
   return successResponse(res, {
     chi_so_id,
     status:  INDICATOR_STATUS.PENDING,

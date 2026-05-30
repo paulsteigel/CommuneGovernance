@@ -1,10 +1,13 @@
 // app/(cb-cm)/indicators.jsx
-// CB_CM quản lý chỉ số của mình:
-//   DRAFT    → "Gửi duyệt" / Edit
-//   PENDING  → "Đang chờ duyệt" (readonly)
-//   REJECTED → "Gửi lại" + hiện lý do
-//   ACTIVE   → readonly (đang dùng)
-//   ARCHIVED → readonly
+// CB_CM quản lý chỉ số của mình.
+//
+// FIX: sau submitIndicator thành công, optimistic-update status
+//      DRAFT/REJECTED → PENDING trong manifest cục bộ.
+//      Không gọi thêm pullManifest (bỏ onRefresh() sau submit).
+//      → 0 Firestore reads tiêu thêm, UI cập nhật ngay:
+//        - Nút "Gửi duyệt" / "Chỉnh sửa" biến mất
+//        - Hint "Đang chờ lãnh đạo" hiện ra
+//        - Số đếm "Chờ duyệt" tăng lên 1
 
 import React, { useState, useCallback } from "react";
 import {
@@ -19,19 +22,16 @@ import { pullManifest, submitIndicator } from "../../services/api";
 import { COLORS, TYPOGRAPHY, SPACING, RADIUS, SHADOW } from "../../constants/theme";
 
 const STATUS_CFG = {
-  DRAFT:    { label: "Nháp",         color: "#888",        bg: "#F5F5F5",  icon: "create-outline" },
-  PENDING:  { label: "Chờ duyệt",   color: "#F59E0B",     bg: "#FEF3C7",  icon: "time-outline" },
-  ACTIVE:   { label: "Đang dùng",   color: COLORS.primary, bg: "#EAF3DE", icon: "checkmark-circle-outline" },
-  REJECTED: { label: "Bị từ chối",  color: COLORS.danger,  bg: COLORS.dangerBg, icon: "close-circle-outline" },
-  ARCHIVED: { label: "Lưu trữ",     color: "#888",        bg: "#F5F5F5",  icon: "archive-outline" },
+  DRAFT:    { label: "Nháp",         color: "#888",         bg: "#F5F5F5",        icon: "create-outline" },
+  PENDING:  { label: "Chờ duyệt",   color: "#F59E0B",      bg: "#FEF3C7",        icon: "time-outline" },
+  ACTIVE:   { label: "Đang dùng",   color: COLORS.primary,  bg: "#EAF3DE",       icon: "checkmark-circle-outline" },
+  REJECTED: { label: "Bị từ chối",  color: COLORS.danger,   bg: COLORS.dangerBg,  icon: "close-circle-outline" },
+  ARCHIVED: { label: "Lưu trữ",     color: "#888",         bg: "#F5F5F5",        icon: "archive-outline" },
 };
 
 const LINH_VUC_LABEL = {
-  NONG_NGHIEP:    "Nông nghiệp",
-  XA_HOI:         "Xã hội",
-  CO_SO_HA_TANG:  "Hạ tầng",
-  AN_NINH:        "An ninh",
-  KINH_TE:        "Kinh tế",
+  NONG_NGHIEP: "Nông nghiệp", XA_HOI: "Xã hội",
+  CO_SO_HA_TANG: "Hạ tầng",  AN_NINH: "An ninh", KINH_TE: "Kinh tế",
 };
 
 const KIEU_LABEL = { so: "Số", text: "Văn bản", boolean: "Có/Không", anh: "Hình ảnh" };
@@ -42,7 +42,7 @@ export default function CbCmIndicators() {
   const router         = useRouter();
 
   const [refreshing, setRefreshing] = useState(false);
-  const [submitting, setSubmitting] = useState(null); // chi_so_id being submitted
+  const [submitting, setSubmitting] = useState(null); // chi_so_id đang submit
 
   const indicators = manifest?.my_indicators || [];
 
@@ -51,6 +51,7 @@ export default function CbCmIndicators() {
     return acc;
   }, {});
 
+  // Pull-to-refresh thủ công: gửi current_version bình thường
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -58,7 +59,7 @@ export default function CbCmIndicators() {
         token, user_id: user.user_id, xa_code, year,
         current_version: manifest?.manifest_version,
       });
-      if (!data.up_to_date) await updateManifest(data.manifest);
+      if (!data.up_to_date && data.manifest) await updateManifest(data.manifest);
     } catch (e) { console.warn(e.message); }
     setRefreshing(false);
   }, [token, user, xa_code, year, manifest]);
@@ -72,22 +73,47 @@ export default function CbCmIndicators() {
         { text: "Gửi", onPress: async () => {
           setSubmitting(ind.chi_so_id);
           try {
-            await submitIndicator({ token, user_id: user.user_id, xa_code, year, chi_so_id: ind.chi_so_id });
+            await submitIndicator({
+              token, user_id: user.user_id, xa_code, year,
+              chi_so_id: ind.chi_so_id,
+            });
+
+            // ── Optimistic local update ─────────────────────────────
+            // Cập nhật status DRAFT/REJECTED → PENDING ngay trong local manifest.
+            // Dùng getState() tránh stale closure trong async callback.
+            // Kết quả:
+            //   • Nút "Gửi duyệt"/"Chỉnh sửa" biến mất khỏi card
+            //   • Hint "Đang chờ lãnh đạo xét duyệt" hiện ra
+            //   • Số đếm "Chờ duyệt" tăng ngay trên header
+            //   • 0 Firestore reads tiêu thêm
+            const currentManifest = useAuthStore.getState().manifest;
+            await updateManifest({
+              ...currentManifest,
+              my_indicators: (currentManifest?.my_indicators || []).map(i =>
+                i.chi_so_id === ind.chi_so_id
+                  ? { ...i, status: "PENDING" }
+                  : i
+              ),
+            });
+            // ────────────────────────────────────────────────────────
+
             Alert.alert("Đã gửi ✓", "Chờ lãnh đạo xét duyệt.");
-            onRefresh();
           } catch (err) {
             Alert.alert("Lỗi", err.message);
-          } finally { setSubmitting(null); }
+            // Không optimistic update khi lỗi → UI giữ nguyên status cũ
+          } finally {
+            setSubmitting(null);
+          }
         }},
       ]
     );
   }
 
   function renderItem({ item: ind }) {
-    const cfg = STATUS_CFG[ind.status] || STATUS_CFG.DRAFT;
-    const isDraft    = ind.status === "DRAFT";
-    const isRejected = ind.status === "REJECTED";
-    const isActive   = ind.status === "ACTIVE";
+    const cfg          = STATUS_CFG[ind.status] || STATUS_CFG.DRAFT;
+    const isDraft      = ind.status === "DRAFT";
+    const isRejected   = ind.status === "REJECTED";
+    const isActive     = ind.status === "ACTIVE";
     const isSubmitting = submitting === ind.chi_so_id;
 
     return (
@@ -107,7 +133,6 @@ export default function CbCmIndicators() {
           </View>
         </View>
 
-        {/* Rejection reason */}
         {isRejected && ind.rejection_reason && (
           <View style={styles.rejectionBox}>
             <Ionicons name="chatbubble-outline" size={13} color={COLORS.danger} />
@@ -115,7 +140,7 @@ export default function CbCmIndicators() {
           </View>
         )}
 
-        {/* Actions */}
+        {/* Actions: chỉ hiện khi DRAFT hoặc REJECTED */}
         {(isDraft || isRejected) && (
           <View style={styles.actions}>
             <TouchableOpacity
@@ -124,28 +149,32 @@ export default function CbCmIndicators() {
                 pathname: "/(cb-cm)/indicator-create",
                 params: { edit_id: ind.chi_so_id },
               })}
+              disabled={isSubmitting}
             >
               <Ionicons name="create-outline" size={16} color={COLORS.primary} />
               <Text style={[styles.actionBtnText, { color: COLORS.primary }]}>Chỉnh sửa</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.actionBtn, styles.actionBtnPrimary]}
+              style={[styles.actionBtn, styles.actionBtnPrimary, isSubmitting && styles.actionBtnDisabled]}
               onPress={() => handleSubmitForReview(ind)}
               disabled={isSubmitting}
             >
               <Ionicons name="send-outline" size={16} color={COLORS.white} />
               <Text style={[styles.actionBtnText, { color: COLORS.white }]}>
-                {isRejected ? "Gửi lại" : "Gửi duyệt"}
+                {isSubmitting ? "Đang gửi..." : isRejected ? "Gửi lại" : "Gửi duyệt"}
               </Text>
             </TouchableOpacity>
           </View>
         )}
+
+        {/* PENDING: chỉ thông báo, không có action */}
         {ind.status === "PENDING" && (
           <View style={styles.pendingHint}>
             <Ionicons name="time-outline" size={13} color="#F59E0B" />
             <Text style={styles.pendingHintText}>Đang chờ lãnh đạo xét duyệt</Text>
           </View>
         )}
+
         {isActive && (
           <View style={styles.activeHint}>
             <Ionicons name="checkmark-circle-outline" size={13} color={COLORS.primary} />
@@ -158,7 +187,6 @@ export default function CbCmIndicators() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Quản lý chỉ số</Text>
         <Text style={styles.headerSub}>CB Chuyên môn · {user?.ho_ten}</Text>
@@ -168,7 +196,7 @@ export default function CbCmIndicators() {
             { label: "Chờ duyệt", num: counts.PENDING  || 0, color: "#F59E0B" },
             { label: "Đang dùng", num: counts.ACTIVE   || 0, color: "#A5D6A7" },
             { label: "Từ chối",   num: counts.REJECTED || 0, color: "#EF9A9A" },
-          ].map((s, i) => (
+          ].map(s => (
             <View key={s.label} style={styles.summaryItem}>
               <Text style={[styles.summaryNum, { color: s.color }]}>{s.num}</Text>
               <Text style={styles.summaryLabel}>{s.label}</Text>
@@ -194,7 +222,6 @@ export default function CbCmIndicators() {
         }
       />
 
-      {/* FAB */}
       <TouchableOpacity
         style={styles.fab}
         onPress={() => router.push("/(cb-cm)/indicator-create")}
@@ -227,9 +254,10 @@ const styles = StyleSheet.create({
   rejectionText:{ ...TYPOGRAPHY.caption, color: COLORS.danger, flex: 1 },
   actions:     { flexDirection: "row", gap: SPACING.sm },
   actionBtn:   { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: SPACING.xs, borderRadius: RADIUS.md, paddingVertical: SPACING.sm + 2 },
-  actionBtnPrimary:  { backgroundColor: COLORS.primary },
-  actionBtnSecondary:{ backgroundColor: COLORS.white, borderWidth: 1.5, borderColor: COLORS.primary },
-  actionBtnText:     { ...TYPOGRAPHY.labelMedium },
+  actionBtnPrimary:   { backgroundColor: COLORS.primary },
+  actionBtnSecondary: { backgroundColor: COLORS.white, borderWidth: 1.5, borderColor: COLORS.primary },
+  actionBtnDisabled:  { opacity: 0.5 },
+  actionBtnText:      { ...TYPOGRAPHY.labelMedium },
   pendingHint: { flexDirection: "row", alignItems: "center", gap: SPACING.xs },
   pendingHintText: { ...TYPOGRAPHY.caption, color: "#F59E0B" },
   activeHint:  { flexDirection: "row", alignItems: "center", gap: SPACING.xs },

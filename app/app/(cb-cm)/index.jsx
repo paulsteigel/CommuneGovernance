@@ -1,7 +1,9 @@
 // app/(cb-cm)/index.jsx
+// FIX: thêm FAB (nút +) để tạo yêu cầu thu thập mới → request-create.jsx
+
 import React, { useState, useCallback } from "react";
 import {
-  View, Text, FlatList, SectionList, TouchableOpacity,
+  View, Text, SectionList, TouchableOpacity,
   StyleSheet, RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -23,18 +25,13 @@ export default function CbCmHome() {
   const [refreshing, setRefreshing] = useState(false);
   const [isOffline,  setIsOffline]  = useState(false);
 
-  // pending_verifications = PENDING_VERIFY + IN_REVIEW (actionable)
-  const actionable = manifest?.pending_verifications || [];
-  // waiting_revision = NEEDS_REVISION (informational — chờ CB_THON sửa)
-  const waitingRevision = manifest?.waiting_revision || [];
-
-  const totalCount  = actionable.length + waitingRevision.length;
+  const actionable      = manifest?.pending_verifications || [];
+  const waitingRevision = manifest?.waiting_revision      || [];
 
   const counts = {
     PENDING_VERIFY: actionable.filter(s => s.status === "PENDING_VERIFY").length,
     IN_REVIEW:      actionable.filter(s => s.status === "IN_REVIEW").length,
     NEEDS_REVISION: waitingRevision.length,
-    VERIFIED:       0, // not shown in manifest
   };
 
   const onRefresh = useCallback(async () => {
@@ -47,15 +44,12 @@ export default function CbCmHome() {
           token, user_id: user.user_id, xa_code, year,
           current_version: manifest?.manifest_version,
         });
-        if (!data.up_to_date) await updateManifest(data.manifest);
-      } catch (e) {
-        console.warn("Pull manifest error:", e.message);
-      }
+        if (!data.up_to_date && data.manifest) await updateManifest(data.manifest);
+      } catch (e) { console.warn("Pull manifest error:", e.message); }
     }
     setRefreshing(false);
   }, [token, user, xa_code, year, manifest]);
 
-  // ── Render: actionable submission card (can be verified) ──
   function renderActionable({ item }) {
     const date       = item.submitted_at?.slice(0, 10) || "—";
     const isInReview = item.status === "IN_REVIEW";
@@ -88,7 +82,6 @@ export default function CbCmHome() {
     );
   }
 
-  // ── Render: waiting revision card (read-only, CB_THON phải sửa) ──
   function renderWaiting({ item }) {
     const date = item.submitted_at?.slice(0, 10) || "—";
     return (
@@ -151,7 +144,6 @@ export default function CbCmHome() {
             <Ionicons name="log-out-outline" size={22} color={COLORS.white} />
           </TouchableOpacity>
         </View>
-
         <View style={styles.summaryRow}>
           {[
             { num: counts.PENDING_VERIFY, label: "Chờ duyệt",  color: COLORS.white },
@@ -198,6 +190,15 @@ export default function CbCmHome() {
         }
         stickySectionHeadersEnabled={false}
       />
+
+      {/* FAB — Tạo yêu cầu thu thập mới */}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => router.push("/(cb-cm)/request-create")}
+        activeOpacity={0.85}
+      >
+        <Ionicons name="add" size={28} color={COLORS.white} />
+      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -215,13 +216,11 @@ const styles = StyleSheet.create({
   summaryNum:    { ...TYPOGRAPHY.displayMedium, color: COLORS.white },
   summaryLabel:  { ...TYPOGRAPHY.caption, color: "rgba(255,255,255,0.8)" },
   summaryDivider:{ width: 1, backgroundColor: "rgba(255,255,255,0.3)" },
-  list:          { padding: SPACING.md, paddingBottom: SPACING.xxl },
+  list:          { padding: SPACING.md, paddingBottom: 88 }, // extra padding for FAB
   sectionHeader: { paddingBottom: SPACING.sm, paddingTop: SPACING.md },
   sectionTitle:  { ...TYPOGRAPHY.titleMedium, color: COLORS.textPrimary },
   emptySection:  { alignItems: "center", paddingVertical: SPACING.lg },
   emptySectionText: { ...TYPOGRAPHY.bodyMedium, color: COLORS.textHint },
-
-  // Actionable card (tappable)
   card:          { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.lg, marginBottom: SPACING.md, ...SHADOW.card, gap: SPACING.sm },
   cardInReview:  { borderLeftWidth: 3, borderLeftColor: "#3B82F6" },
   cardTop:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
@@ -230,11 +229,19 @@ const styles = StyleSheet.create({
   cardMeta:      { flexDirection: "row", alignItems: "center", gap: SPACING.md },
   metaRow:       { flexDirection: "row", alignItems: "center", gap: SPACING.xs },
   metaText:      { ...TYPOGRAPHY.bodyMedium, color: COLORS.textSecondary },
-
-  // Waiting revision card (read-only, muted)
   waitingCard:   { backgroundColor: COLORS.white, borderRadius: RADIUS.lg, padding: SPACING.lg, marginBottom: SPACING.md, ...SHADOW.card, gap: SPACING.sm, opacity: 0.75, borderLeftWidth: 3, borderLeftColor: COLORS.danger },
   waitingBadge:  { backgroundColor: COLORS.dangerBg, borderRadius: RADIUS.full, paddingHorizontal: SPACING.sm, paddingVertical: 3 },
   waitingBadgeText: { ...TYPOGRAPHY.caption, color: COLORS.danger, fontWeight: "600" },
   commentRow:    { flexDirection: "row", alignItems: "center", gap: SPACING.xs },
   commentText:   { ...TYPOGRAPHY.caption, color: COLORS.textHint, flex: 1, fontStyle: "italic" },
+  // FAB — màu accent (cam) để phân biệt với FAB chỉ số (xanh)
+  fab: {
+    position: "absolute", bottom: SPACING.xl, right: SPACING.lg,
+    width: 56, height: 56, borderRadius: 28,
+    backgroundColor: COLORS.accent,
+    justifyContent: "center", alignItems: "center",
+    elevation: 6,
+    shadowColor: "#000", shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2, shadowRadius: 6,
+  },
 });

@@ -48,19 +48,10 @@ export default function CbCmLayout() {
           ),
         }}
       />
-      {/*
-        Hidden screens — href: null ẩn khỏi tab bar, vẫn navigate được bằng router.push.
-        name phải khớp chính xác đường dẫn file tương đối từ group này.
-        KHÔNG dùng tabBarButton: () => null — react-navigation 7 crash khi nhận null.
-      */}
-      <Tabs.Screen
-        name="indicator-create"
-        options={{ href: null }}
-      />
-      <Tabs.Screen
-        name="verify/[subId]"
-        options={{ href: null }}
-      />
+      {/* Hidden screens — href: null ẩn khỏi tab bar, navigate bằng router.push */}
+      <Tabs.Screen name="indicator-create"  options={{ href: null }} />
+      <Tabs.Screen name="request-create"    options={{ href: null }} />
+      <Tabs.Screen name="verify/[subId]"    options={{ href: null }} />
     </Tabs>
   );
 }
