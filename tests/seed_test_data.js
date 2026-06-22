@@ -26,10 +26,16 @@ const PASS    = "Abc";
 
 const USERS = [
   {
-    user_id: "thon01", ho_ten: "Nguyen Van Thon",
+    user_id: "thon01", ho_ten: "Nguyen Van Thon 1",
     phone: "0901000001", cccd: "079100000001",
     chuc_danh: "Truong thon THON01",
     vai_tro: "CB_THON", don_vi: "THON01", nhanh: "UBND", linh_vuc_codes: [],
+  },
+  {
+    user_id: "thon02", ho_ten: "Nguyen Van Thon 2",
+    phone: "0901000011", cccd: "079100000011",
+    chuc_danh: "Truong thon THON02",
+    vai_tro: "CB_THON", don_vi: "THON02", nhanh: "UBND", linh_vuc_codes: [],
   },
   {
     user_id: "cbcm01", ho_ten: "Le Thi Chuyen Mon",
@@ -54,22 +60,22 @@ const USERS = [
 
 const INDICATORS = [
   {
-    chi_so_id: "CS001", ten_chi_so: "Dien tich lua",
-    mo_ta: "Tong dien tich canh tac lua trong thon",
+    chi_so_id: "CS001", ten_chi_so: "Diện tích canh tác lúa 2 vụ",
+    mo_ta: "Tong dien tich canh tac lua 2 vụ trong thon",
     don_vi_do: "ha", kieu_du_lieu: "so", linh_vuc: "NONG_NGHIEP",
     nhanh: "UBND", validation: { required: true, min: 0, max: 10000 }, status: "ACTIVE",
   },
   {
-    chi_so_id: "CS002", ten_chi_so: "So ho ngheo",
+    chi_so_id: "CS002", ten_chi_so: "Số hộ nghèo",
     mo_ta: "So ho duoc xep loai ngheo trong thon",
     don_vi_do: "ho", kieu_du_lieu: "so", linh_vuc: "XA_HOI",
     nhanh: "UBND", validation: { required: true, min: 0, max: 1000 }, status: "ACTIVE",
   },
   {
-    chi_so_id: "CS003", ten_chi_so: "Co duong be tong",
-    mo_ta: "Thon co duong be tong lien thon khong",
-    don_vi_do: null, kieu_du_lieu: "boolean", linh_vuc: "CO_SO_HA_TANG",
-    nhanh: "UBND", validation: { required: true }, status: "ACTIVE",
+    chi_so_id: "CS003", ten_chi_so: "Chiều dài đường nội đồng đi lại được bằng xe máy",
+    mo_ta: "Tổng chiều dài đường nội đồng trong thôn có thể đi lại được bằng xe máy",
+    don_vi_do: "km", kieu_du_lieu: "so", linh_vuc: "NONG_NGHIEP",
+    nhanh: "UBND", validation: { required: true, min: 0, max: 1000 }, status: "ACTIVE",
   },
   {
     chi_so_id: "CS_DRAFT01", ten_chi_so: "So luong ao ca",

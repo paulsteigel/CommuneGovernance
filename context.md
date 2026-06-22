@@ -563,3 +563,6 @@ Mong đợi logic của App sẽ bao gồm các tab ở dưới đáy màn hình
 +++ Báo cáo: Đây là công cụ so sánh số liệu để sớm phát hiện bất cập từ các chỉ số/ bộ chỉ số đã yêu cầu, cung cấp. Các lớp thông tin khác cũng có thể được xem ở đây (cụ có thể cân nhắc xem nên tạo riêng hay ko?) ví dụ: Bản đồ googlemap thống kê các điểm cháy rừng, lở đất, lũ lụt, dịch bệnh, an ninh. Số ý kiến đánh giá về chất lượng thực hiện dịch vụ công.
 ++ Notification: Giúp người dùng được báo có các yêu cầu mới phát sinh và truy cập trực tiếp vào tính năng liên quan. Nguyên tắc notify là: NHững bên có liên quan đến nghiệp vụ được thông báo về tình trạng mỗi khi nó được thay đổi trạng thái
 
+NOTE
+Form duyệt của lãnh đạo không refresh duyệt xong vẫn có thể duyệt lại và gây lôi >> kiểm tra lại hết
+

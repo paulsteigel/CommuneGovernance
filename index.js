@@ -9,7 +9,7 @@ const authHandler       = require("./handlers/auth");
 
 let dataHandler, indicatorsHandler, requestsHandler,
     verifyHandler, dashboardHandler, syncHandler, reportHandler,
-    publicHandler, adminHandler;
+    publicHandler, adminHandler, superAdminHandler;
 
 const app = express();
 
@@ -110,6 +110,13 @@ app.get("/public/xa/:xa_code/results", asyncHandler(async (req, res) => {
 }));
 
 // ── Registration (public — uses invite link) ──────────────────
+// GET  /register?token=XXX  → HTML registration form
+app.get("/register", asyncHandler(async (req, res) => {
+  if (!adminHandler) adminHandler = require("./handlers/admin");
+  return adminHandler.registerPage(req, res);
+}));
+
+// POST /register → API endpoint (used by HTML form above & mobile app)
 app.post("/register", asyncHandler(async (req, res) => {
   if (!adminHandler) adminHandler = require("./handlers/admin");
   return adminHandler.register(req, res);
@@ -134,6 +141,45 @@ app.post("/admin/approve_user", asyncHandler(async (req, res) => {
 app.post("/admin/reset_password", asyncHandler(async (req, res) => {
   if (!adminHandler) adminHandler = require("./handlers/admin");
   return adminHandler.resetPassword(req, res);
+}));
+
+app.get("/admin/commune_config", asyncHandler(async (req, res) => {
+  if (!adminHandler) adminHandler = require("./handlers/admin");
+  req.body = { ...req.body, ...req.query }; // merge token/user_id for GET
+  return adminHandler.getCommuneConfig(req, res);
+}));
+
+app.post("/admin/setup_commune", asyncHandler(async (req, res) => {
+  if (!adminHandler) adminHandler = require("./handlers/admin");
+  return adminHandler.setupCommune(req, res);
+}));
+
+// ── Super-Admin ────────────────────────────────────────────────
+app.post("/super-admin/create_commune", asyncHandler(async (req, res) => {
+  if (!superAdminHandler) superAdminHandler = require("./handlers/superAdmin");
+  return superAdminHandler.createCommune(req, res);
+}));
+
+app.post("/super-admin/bootstrap_link", asyncHandler(async (req, res) => {
+  if (!superAdminHandler) superAdminHandler = require("./handlers/superAdmin");
+  return superAdminHandler.createBootstrapLink(req, res);
+}));
+
+app.get("/super-admin/communes", asyncHandler(async (req, res) => {
+  if (!superAdminHandler) superAdminHandler = require("./handlers/superAdmin");
+  req.body = { ...req.body, ...req.query };
+  return superAdminHandler.listCommunes(req, res);
+}));
+
+// ── Bootstrap (Admin first-time setup — public) ───────────────
+app.get("/bootstrap", asyncHandler(async (req, res) => {
+  if (!superAdminHandler) superAdminHandler = require("./handlers/superAdmin");
+  return superAdminHandler.bootstrapPage(req, res);
+}));
+
+app.post("/bootstrap/register", asyncHandler(async (req, res) => {
+  if (!superAdminHandler) superAdminHandler = require("./handlers/superAdmin");
+  return superAdminHandler.bootstrapRegister(req, res);
 }));
 
 app.use((_req, res) => {
